@@ -28,6 +28,7 @@ type Server struct {
 	CPUProfile   string
 	TLSKey       string
 	TLSCert      string
+	AuthMode     string
 	TLS          bool
 	NoAuth       bool
 	AppendOnly   bool
@@ -157,6 +158,23 @@ func (s *Server) AuthHandler(f *HtpasswdFile, h http.Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		username, password, ok := r.BasicAuth()
 		if !ok || !f.Validate(username, password) {
+			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+			return
+		}
+		if s.PrivateRepos && !isUserPath(username, r.URL.Path) && r.URL.Path != "/metrics" {
+			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+			return
+		}
+		h.ServeHTTP(w, r)
+	}
+}
+
+// LdapAuthHandler wraps h with a http.HandlerFunc that performs basic authentication against an LDAP/AD Server
+// and returns the http.HandlerFunc.
+func (s *Server) LdapAuthHandler(auth *LdapAuth, h http.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		username, password, ok := r.BasicAuth()
+		if !ok || !auth.Validate(username, password) {
 			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 			return
 		}

@@ -68,6 +68,7 @@ Flags:
       --listen string       listen address (default ":8000")
       --log string          log HTTP requests in the combined log format
       --no-auth             disable .htpasswd authentication
+      --auth-mode           authenticate user using .httpasswd or ldap
       --path string         data directory (default "/tmp/restic")
       --private-repos       users can only access their private repo
       --prometheus          enable Prometheus metrics
@@ -77,6 +78,7 @@ Flags:
   -V, --version             show version and quit
 
 ```
+### tl;dr
 
 By default the server persists backup data in `/tmp/restic`.  To start the server with a custom persistence directory and with authentication disabled:
 
@@ -84,6 +86,9 @@ By default the server persists backup data in `/tmp/restic`.  To start the serve
 rest-server --path /user/home/backup --no-auth
 ```
 
+### Auth Modes
+
+#### htpasswd
 To authenticate users (for access to the rest-server), the server supports using a `.htpasswd` file to specify users. You can create such a file at the root of the persistence directory by executing the following command (note that you need the `htpasswd` program from Apache's http-tools).  In order to append new user to the file, just omit the `-c` argument.  Only bcrypt and SHA encryption methods are supported, so use -B (very secure) or -s (insecure by today's standards) when adding/changing passwords.
 
 ```
@@ -102,6 +107,21 @@ Signed certificate is required by the restic backend, but if you just want to te
 openssl genrsa -out private_key 2048
 openssl req -new -x509 -key private_key -out public_key -days 365
 ```
+
+#### ldap
+
+It is possible to authenticate users using a ldap server. Several environment variables need to be set, which configure the behaviour:
+
+```
+     LDAP_URL        The LDAP endpoint URL (e.g. ldap://ldap.mydomain.com), automatically upgraded to use TLS
+     LDAP_SEARCHDN   The DN of a user who has the permission to search an LDAP (e.g. uid=searchuser,ou=accounts,dc=mydomain,dc=com)
+     LDAP_SEARCHPWD  The password of the user specified by LDAP_SEARCHDN
+     LDAP_BASEDN     The base DN to look up a user (e.g. ou=accounts,dc=mydomain,dc=com)
+     LDAP_FILTER     The search filter for looking up a user, e.g. (objectClass=posixAccount)(uid=system*)
+     LDAP_UID        The attribute used to match a user during the LDAP search (e.g. uid, email
+```
+
+### Append Mode
 
 The `--append-only` mode allows creation of new backups but prevents deletion and modification of existing backups. This can be useful when backing up systems that have a potential of being hacked.
 
@@ -131,7 +151,7 @@ You can set environment variable `OPTIONS` to any extra flags you'd like to pass
 
 #### Manage users
 
-##### Add user
+##### Add user (.htpasswd mod only)
 
 ```
 docker exec -it rest_server create_user myuser

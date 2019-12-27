@@ -46,7 +46,8 @@ func init() {
 	flags.BoolVar(&server.TLS, "tls", server.TLS, "turn on TLS support")
 	flags.StringVar(&server.TLSCert, "tls-cert", server.TLSCert, "TLS certificate path")
 	flags.StringVar(&server.TLSKey, "tls-key", server.TLSKey, "TLS key path")
-	flags.BoolVar(&server.NoAuth, "no-auth", server.NoAuth, "disable .htpasswd authentication")
+	flags.BoolVar(&server.NoAuth, "no-auth", server.NoAuth, "disable authentication")
+	flags.StringVar(&server.AuthMode, "auth-mode", server.AuthMode, "set authentication mode to htpasswd or ldap")
 	flags.BoolVar(&server.AppendOnly, "append-only", server.AppendOnly, "enable append only mode")
 	flags.BoolVar(&server.PrivateRepos, "private-repos", server.PrivateRepos, "users can only access their private repo")
 	flags.BoolVar(&server.Prometheus, "prometheus", server.Prometheus, "enable Prometheus metrics")
@@ -82,12 +83,18 @@ func getHandler(server restserver.Server) (http.Handler, error) {
 		return mux, nil
 	}
 
-	log.Println("Authentication enabled")
-	htpasswdFile, err := restserver.NewHtpasswdFromFile(filepath.Join(server.Path, ".htpasswd"))
-	if err != nil {
-		return nil, fmt.Errorf("cannot load .htpasswd (use --no-auth to disable): %v", err)
+	if server.AuthMode == "ldap" {
+		log.Println("Authentication via ldap enabled")
+		ldapAuth := restserver.NewLdapAuth(server.Debug)
+		return server.LdapAuthHandler(ldapAuth, mux), nil
+	} else {
+		log.Println("Authentication via htpasswd enabled")
+		htpasswdFile, err := restserver.NewHtpasswdFromFile(filepath.Join(server.Path, ".htpasswd"))
+		if err != nil {
+			return nil, fmt.Errorf("cannot load .htpasswd (use --no-auth to disable): %v", err)
+		}
+		return server.AuthHandler(htpasswdFile, mux), nil
 	}
-	return server.AuthHandler(htpasswdFile, mux), nil
 }
 
 func runRoot(cmd *cobra.Command, args []string) error {
