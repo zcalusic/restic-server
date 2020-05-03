@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -43,27 +45,6 @@ func TestJoin(t *testing.T) {
 				t.Fatalf("wrong result returned, want %v, got %v", want, got)
 			}
 		})
-	}
-}
-
-func TestIsUserPath(t *testing.T) {
-	var tests = []struct {
-		username string
-		path     string
-		result   bool
-	}{
-		{"foo", "/", false},
-		{"foo", "/foo", true},
-		{"foo", "/foo/", true},
-		{"foo", "/foo/bar", true},
-		{"foo", "/foobar", false},
-	}
-
-	for _, test := range tests {
-		result := isUserPath(test.username, test.path)
-		if result != test.result {
-			t.Errorf("isUserPath(%q, %q) was incorrect, got: %v, want: %v.", test.username, test.path, result, test.result)
-		}
 	}
 }
 
@@ -229,7 +210,7 @@ func TestResticHandler(t *testing.T) {
 	}()
 
 	// set append-only mode and configure path
-	mux := NewHandler(Server{
+	mux, err := NewHandler(&Server{
 		AppendOnly: true,
 		Path:       tempdir,
 	})
@@ -244,6 +225,59 @@ func TestResticHandler(t *testing.T) {
 			for i, seq := range test.seq {
 				t.Logf("request %v: %v %v", i, seq.req.Method, seq.req.URL.Path)
 				checkRequest(t, mux.ServeHTTP, seq.req, seq.want)
+			}
+		})
+	}
+}
+
+func TestSplitURLPath(t *testing.T) {
+	var tests = []struct {
+		// Params
+		urlPath  string
+		maxDepth int
+		// Expected result
+		folderPath []string
+		remainder  string
+	}{
+		{"/", 0, nil, "/"},
+		{"/", 2, nil, "/"},
+		{"/foo/bar/locks/0123", 0, nil, "/foo/bar/locks/0123"},
+		{"/foo/bar/locks/0123", 1, []string{"foo"}, "/bar/locks/0123"},
+		{"/foo/bar/locks/0123", 2, []string{"foo", "bar"}, "/locks/0123"},
+		{"/foo/bar/locks/0123", 3, []string{"foo", "bar"}, "/locks/0123"},
+		{"/foo/bar/zzz/locks/0123", 2, []string{"foo", "bar"}, "/zzz/locks/0123"},
+		{"/foo/bar/zzz/locks/0123", 3, []string{"foo", "bar", "zzz"}, "/locks/0123"},
+		{"/foo/bar/locks/", 2, []string{"foo", "bar"}, "/locks/"},
+		{"/foo/bar/", 2, []string{"foo", "bar"}, "/"},
+		{"/foo/bar", 2, []string{"foo"}, "/bar"},
+		{"/locks/", 2, nil, "/locks/"},
+		// This function only splits, it does not check the path components!
+		{"/../../locks/", 2, []string{"..", ".."}, "/locks/"},
+		{"///locks/", 2, []string{"", ""}, "/locks/"},
+		{"////locks/", 2, []string{"", ""}, "//locks/"},
+		// Robustness against broken input
+		{"/", -42, nil, "/"},
+		{"foo", 2, nil, "foo"},
+		{"foo/bar", 2, nil, "foo/bar"},
+		{"", 2, nil, ""},
+	}
+
+	for i, test := range tests {
+		t.Run(fmt.Sprintf("test-%d", i), func(t *testing.T) {
+			folderPath, remainder := splitURLPath(test.urlPath, test.maxDepth)
+
+			var fpEqual bool
+			if len(test.folderPath) == 0 && len(folderPath) == 0 {
+				fpEqual = true // this check allows for nil vs empty slice
+			} else {
+				fpEqual = reflect.DeepEqual(test.folderPath, folderPath)
+			}
+			if !fpEqual {
+				t.Errorf("wrong folderPath: want %v, got %v", test.folderPath, folderPath)
+			}
+
+			if test.remainder != remainder {
+				t.Errorf("wrong remainder: want %v, got %v", test.remainder, remainder)
 			}
 		})
 	}

@@ -81,14 +81,16 @@ func TestGetHandler(t *testing.T) {
 	}
 	defer os.Remove(dir)
 
+	getHandler := restserver.NewHandler
+
 	// With NoAuth = false and no .htpasswd
-	_, err = getHandler(restserver.Server{Path: dir})
+	_, err = getHandler(&restserver.Server{Path: dir})
 	if err == nil {
 		t.Errorf("NoAuth=false: expected error, got nil")
 	}
 
 	// With NoAuth = true and no .htpasswd
-	_, err = getHandler(restserver.Server{NoAuth: true, Path: dir})
+	_, err = getHandler(&restserver.Server{NoAuth: true, Path: dir})
 	if err != nil {
 		t.Errorf("NoAuth=true: expected no error, got %v", err)
 	}
@@ -102,7 +104,7 @@ func TestGetHandler(t *testing.T) {
 	defer os.Remove(htpasswd)
 
 	// With NoAuth = false and with .htpasswd
-	_, err = getHandler(restserver.Server{Path: dir})
+	_, err = getHandler(&restserver.Server{Path: dir})
 	if err != nil {
 		t.Errorf("NoAuth=false with .htpasswd: expected no error, got %v", err)
 	}

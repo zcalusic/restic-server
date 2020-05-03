@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/miolini/datacounter"
+	"github.com/restic/rest-server/quota"
 )
 
 // Options are options for the Handler accepted by New
@@ -24,9 +25,7 @@ type Options struct {
 	FileMode   os.FileMode
 
 	BlobMetricFunc BlobMetricFunc
-
-	// FIXME: This information is not persistent in the new setup
-	MaxRepoSize int64
+	QuotaManager   *quota.Manager
 }
 
 // DefaultDirMode is the file mode used for directory creation if not
@@ -58,6 +57,7 @@ func New(path string, opt Options) (*Handler, error) {
 }
 
 // Handler handles all REST API requests for a single Restic backup repo
+// Spec: https://restic.readthedocs.io/en/latest/100_references.html#rest-backend
 type Handler struct {
 	path string // filesystem path of repo
 	opt  Options
@@ -103,6 +103,7 @@ const (
 // objectType: one of ObjectTypes
 // operation: one of the BlobOperations above
 // nBytes: the number of bytes affected, or 0 if not relevant
+// TODO: Perhaps add http.Request for the username so that this can be cached?
 type BlobMetricFunc func(objectType string, operation BlobOperation, nBytes uint64)
 
 // ServeHTTP performs strict matching on the repo part of the URL path and
@@ -208,13 +209,13 @@ func (h *Handler) sendMetric(objectType string, operation BlobOperation, nBytes 
 
 // needSize tells you if we need the file size for metrics of quota accounting
 func (h *Handler) needSize() bool {
-	return h.opt.BlobMetricFunc != nil || h.opt.MaxRepoSize > 0
+	return h.opt.BlobMetricFunc != nil || h.opt.QuotaManager != nil
 }
 
 // incrementRepoSpaceUsage increments the repo space usage if quota are enabled
 func (h *Handler) incrementRepoSpaceUsage(by int64) {
-	if h.opt.MaxRepoSize > 0 {
-		// FIXME: call the actual incrementRepoSpaceUsage
+	if h.opt.QuotaManager != nil {
+		h.opt.QuotaManager.IncUsage(by)
 	}
 }
 
@@ -222,15 +223,10 @@ func (h *Handler) incrementRepoSpaceUsage(by int64) {
 // as is if not.
 // If an error occurs, it returns both an error and the appropriate HTTP error code.
 func (h *Handler) wrapFileWriter(r *http.Request, w io.Writer) (io.Writer, int, error) {
-	var errCode int
-	if h.opt.MaxRepoSize > 0 {
-		// FIXME: optionally wrap with maxSizeWriter
-		// FIXME: return h.maxSizeWriter(r, tf)
-		// if err != nil && h.opt.Debug {
-		//    log.Printf("wrapFileWriter: %v", err)
-		//}
+	if h.opt.QuotaManager == nil {
+		return w, 0, nil // unmodified
 	}
-	return w, 0, nil
+	return h.opt.QuotaManager.WrapWriter(r, w)
 }
 
 // checkConfig checks whether a configuration exists.

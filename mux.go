@@ -1,15 +1,15 @@
 package restserver
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"os"
-
-	goji "goji.io"
+	"path/filepath"
 
 	"github.com/gorilla/handlers"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"goji.io/pat"
+	"github.com/restic/rest-server/quota"
 )
 
 func (s *Server) debugHandler(next http.Handler) http.Handler {
@@ -29,43 +29,51 @@ func (s *Server) logHandler(next http.Handler) http.Handler {
 	return handlers.CombinedLoggingHandler(accessLog, next)
 }
 
+func (s *Server) checkAuth(r *http.Request) (username string, ok bool) {
+	if s.NoAuth {
+		return username, true
+	}
+	var password string
+	username, password, ok = r.BasicAuth()
+	if !ok || !s.htpasswdFile.Validate(username, password) {
+		return "", false
+	}
+	return username, true
+}
+
 // NewHandler returns the master HTTP multiplexer/router.
-func NewHandler(server Server) *goji.Mux {
-	mux := goji.NewMux()
-
-	if server.Debug {
-		mux.Use(server.debugHandler)
+func NewHandler(server *Server) (http.Handler, error) {
+	if !server.NoAuth {
+		var err error
+		server.htpasswdFile, err = NewHtpasswdFromFile(filepath.Join(server.Path, ".htpasswd"))
+		if err != nil {
+			return nil, fmt.Errorf("cannot load .htpasswd (use --no-auth to disable): %v", err)
+		}
 	}
 
-	if server.Log != "" {
-		mux.Use(server.logHandler)
+	if server.MaxRepoSize > 0 {
+		log.Printf("Initializing quota (can take a while)...")
+		qm, err := quota.New(server.Path, server.MaxRepoSize)
+		if err != nil {
+			return nil, err
+		}
+		server.quotaManager = qm
+		log.Printf("Quota initialized, currenly using %.2f GiB", float64(qm.SpaceUsed()/1024/1024))
 	}
 
+	mux := http.NewServeMux()
 	if server.Prometheus {
-		mux.Handle(pat.Get("/metrics"), promhttp.Handler())
+		// FIXME: need auth like in previous version?
+		mux.Handle("/metrics", promhttp.Handler())
 	}
+	mux.Handle("/", server)
 
-	mux.HandleFunc(pat.Head("/config"), server.CheckConfig)
-	mux.HandleFunc(pat.Head("/:repo/config"), server.CheckConfig)
-	mux.HandleFunc(pat.Get("/config"), server.GetConfig)
-	mux.HandleFunc(pat.Get("/:repo/config"), server.GetConfig)
-	mux.HandleFunc(pat.Post("/config"), server.SaveConfig)
-	mux.HandleFunc(pat.Post("/:repo/config"), server.SaveConfig)
-	mux.HandleFunc(pat.Delete("/config"), server.DeleteConfig)
-	mux.HandleFunc(pat.Delete("/:repo/config"), server.DeleteConfig)
-	mux.HandleFunc(pat.Get("/:type/"), server.ListBlobs)
-	mux.HandleFunc(pat.Get("/:repo/:type/"), server.ListBlobs)
-	mux.HandleFunc(pat.Head("/:type/:name"), server.CheckBlob)
-	mux.HandleFunc(pat.Head("/:repo/:type/:name"), server.CheckBlob)
-	mux.HandleFunc(pat.Get("/:type/:name"), server.GetBlob)
-	mux.HandleFunc(pat.Get("/:repo/:type/:name"), server.GetBlob)
-	mux.HandleFunc(pat.Post("/:type/:name"), server.SaveBlob)
-	mux.HandleFunc(pat.Post("/:repo/:type/:name"), server.SaveBlob)
-	mux.HandleFunc(pat.Delete("/:type/:name"), server.DeleteBlob)
-	mux.HandleFunc(pat.Delete("/:repo/:type/:name"), server.DeleteBlob)
-	mux.HandleFunc(pat.Post("/"), server.CreateRepo)
-	mux.HandleFunc(pat.Post("/:repo"), server.CreateRepo)
-	mux.HandleFunc(pat.Post("/:repo/"), server.CreateRepo)
-
-	return mux
+	var handler http.Handler = mux
+	if server.Debug {
+		handler = server.debugHandler(handler)
+	}
+	if server.Log != "" {
+		handler = server.logHandler(handler)
+	}
+	return handler, nil
 }

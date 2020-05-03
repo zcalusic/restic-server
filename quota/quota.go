@@ -30,7 +30,7 @@ type Manager struct {
 	repoSize    int64 // must be accessed using sync/atomic
 }
 
-// maxSizeWriter limits the number of bytes written
+// WrapWriter limits the number of bytes written
 // to the space that is currently available as given by
 // the server's MaxRepoSize. This type is safe for use
 // by multiple goroutines sharing the same *Server.
@@ -40,11 +40,11 @@ type maxSizeWriter struct {
 }
 
 func (w maxSizeWriter) Write(p []byte) (n int, err error) {
-	if int64(len(p)) > w.m.repoSpaceRemaining() {
+	if int64(len(p)) > w.m.SpaceRemaining() {
 		return 0, fmt.Errorf("repository has reached maximum size (%d bytes)", w.m.maxRepoSize)
 	}
 	n, err = w.Writer.Write(p)
-	w.m.incrementRepoSpaceUsage(int64(n))
+	w.m.IncUsage(int64(n))
 	return n, err
 }
 
@@ -58,9 +58,9 @@ func (m *Manager) updateSize() error {
 	return nil
 }
 
-// maxSizeWriter wraps w in a writer that enforces s.MaxRepoSize.
+// WrapWriter wraps w in a writer that enforces s.MaxRepoSize.
 // If there is an error, a status code and the error are returned.
-func (m *Manager) maxSizeWriter(req *http.Request, w io.Writer) (io.Writer, int, error) {
+func (m *Manager) WrapWriter(req *http.Request, w io.Writer) (io.Writer, int, error) {
 	currentSize := atomic.LoadInt64(&m.repoSize)
 
 	// if content-length is set and is trustworthy, we can save some time
@@ -84,10 +84,10 @@ func (m *Manager) maxSizeWriter(req *http.Request, w io.Writer) (io.Writer, int,
 	return maxSizeWriter{Writer: w, m: m}, 0, nil
 }
 
-// repoSpaceRemaining returns how much space is available in the repo
+// SpaceRemaining returns how much space is available in the repo
 // according to s.MaxRepoSize. s.repoSize must already be set.
 // If there is no limit, -1 is returned.
-func (m *Manager) repoSpaceRemaining() int64 {
+func (m *Manager) SpaceRemaining() int64 {
 	if m.maxRepoSize == 0 {
 		return -1
 	}
@@ -96,9 +96,14 @@ func (m *Manager) repoSpaceRemaining() int64 {
 	return maxSize - currentSize
 }
 
-// incrementRepoSpaceUsage increments the current repo size (which
+// SpaceUsed returns how much space is used in the repo.
+func (m *Manager) SpaceUsed() int64 {
+	return atomic.LoadInt64(&m.repoSize)
+}
+
+// IncUsage increments the current repo size (which
 // must already be initialized).
-func (m *Manager) incrementRepoSpaceUsage(by int64) {
+func (m *Manager) IncUsage(by int64) {
 	atomic.AddInt64(&m.repoSize, by)
 }
 
