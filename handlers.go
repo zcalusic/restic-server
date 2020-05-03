@@ -34,9 +34,6 @@ type Server struct {
 	PrivateRepos bool
 	Prometheus   bool
 	Debug        bool
-	MaxRepoSize  int64
-
-	repoSize int64 // must be accessed using sync/atomic
 }
 
 func (s *Server) isHashed(dir string) bool {
@@ -485,22 +482,6 @@ func (s *Server) GetBlob(w http.ResponseWriter, r *http.Request) {
 		metricBlobReadTotal.With(labels).Inc()
 		metricBlobReadBytesTotal.With(labels).Add(float64(wc.Count()))
 	}
-}
-
-// tallySize counts the size of the contents of path.
-func tallySize(path string) (int64, error) {
-	if path == "" {
-		path = "."
-	}
-	var size int64
-	err := filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		size += info.Size()
-		return nil
-	})
-	return size, err
 }
 
 // SaveBlob saves a blob to the repository.
