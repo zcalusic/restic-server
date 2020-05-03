@@ -1,282 +1,331 @@
-package restserver
+package repo
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/miolini/datacounter"
-	"github.com/prometheus/client_golang/prometheus"
-	"goji.io/middleware"
-	"goji.io/pat"
 )
 
-// Server determines how a Mux's handlers behave.
-type Server struct {
-	Path         string
-	Listen       string
-	Log          string
-	CPUProfile   string
-	TLSKey       string
-	TLSCert      string
-	TLS          bool
-	NoAuth       bool
-	AppendOnly   bool
-	PrivateRepos bool
-	Prometheus   bool
-	Debug        bool
-	MaxRepoSize  int64
+// Options are options for the Handler accepted by New
+type Options struct {
+	AppendOnly bool // if set, delete actions are not allowed
+	Debug      bool
+	DirMode    os.FileMode
+	FileMode   os.FileMode
 
-	repoSize int64 // must be accessed using sync/atomic
+	BlobMetricFunc BlobMetricFunc
+
+	// FIXME: This information is not persistent in the new setup
+	MaxRepoSize int64
 }
 
-func (s *Server) isHashed(dir string) bool {
-	return dir == "data"
-}
+// DefaultDirMode is the file mode used for directory creation if not
+// overridden in the Options
+const DefaultDirMode os.FileMode = 0700
 
-func valid(name string) bool {
-	// taken from net/http.Dir
-	if strings.Contains(name, "\x00") {
-		return false
+// DefaultFileMode is the file mode used for file creation if not
+// overridden in the Options
+const DefaultFileMode os.FileMode = 0600
+
+// New creates a new Handler for a single Restic backup repo.
+// path is the full filesystem path to this repo directory.
+// opt is a set of options.
+func New(path string, opt Options) (*Handler, error) {
+	if path == "" {
+		return nil, fmt.Errorf("path is required")
 	}
-
-	if filepath.Separator != '/' && strings.ContainsRune(name, filepath.Separator) {
-		return false
+	if opt.DirMode == 0 {
+		opt.DirMode = DefaultDirMode
 	}
-
-	return true
+	if opt.FileMode == 0 {
+		opt.FileMode = DefaultFileMode
+	}
+	h := Handler{
+		path: path,
+		opt:  opt,
+	}
+	return &h, nil
 }
 
-var validTypes = []string{"data", "index", "keys", "locks", "snapshots", "config"}
+// Handler handles all REST API requests for a single Restic backup repo
+type Handler struct {
+	path string // filesystem path of repo
+	opt  Options
+}
 
-func (s *Server) isValidType(name string) bool {
-	for _, tpe := range validTypes {
-		if name == tpe {
-			return true
+// httpDefaultError write a HTTP error with the default description
+func httpDefaultError(w http.ResponseWriter, code int) {
+	http.Error(w, http.StatusText(code), code)
+}
+
+// httpMethodNotAllowed writes a 405 Method Not Allowed HTTP error with
+// the required Allow header listing the methods that are allowed.
+func httpMethodNotAllowed(w http.ResponseWriter, allowed []string) {
+	w.Header().Set("Allow", strings.Join(allowed, ", "))
+	httpDefaultError(w, http.StatusMethodNotAllowed)
+}
+
+// BlobPathRE matches valid blob URI paths with optional object IDs
+var BlobPathRE = regexp.MustCompile(`^/(data|index|keys|locks|snapshots)/([0-9a-f]{64})?$`)
+
+// ObjectTypes are subdirs that are used for object storage
+var ObjectTypes = []string{"data", "index", "keys", "locks", "snapshots"}
+
+// FileTypes are files stored directly under the repo direct that are accessible
+// through a request
+var FileTypes = []string{"config"}
+
+func isHashed(objectType string) bool {
+	return objectType == "data"
+}
+
+// BlobOperation describe the current blob operation in the BlobMetricFunc callback
+type BlobOperation byte
+
+const (
+	BlobRead   = 'R' // A blob has been read
+	BlobWrite  = 'W' // A blob has been written
+	BlobDelete = 'D' // A blob has been deleted
+)
+
+// BlobMetricFunc is the callback signature for blob metrics. Such a callback
+// can be passed in the Options to keep track of various metrics.
+// objectType: one of ObjectTypes
+// operation: one of the BlobOperations above
+// nBytes: the number of bytes affected, or 0 if not relevant
+type BlobMetricFunc func(objectType string, operation BlobOperation, nBytes uint64)
+
+// ServeHTTP performs strict matching on the repo part of the URL path and
+// dispatches the request to the appropriate handler.
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	urlPath := r.URL.Path
+	if urlPath == "/" {
+		// TODO: add HEAD and GET
+		switch r.Method {
+		case "POST":
+			h.createRepo(w, r)
+		default:
+			httpMethodNotAllowed(w, []string{"POST"})
 		}
-	}
-
-	return false
-}
-
-// join takes a number of path names, sanitizes them, and returns them joined
-// with base for the current operating system to use (dirs separated by
-// filepath.Separator). The returned path is always either equal to base or a
-// subdir of base.
-func join(base string, names ...string) (string, error) {
-	clean := make([]string, 0, len(names)+1)
-	clean = append(clean, base)
-
-	// taken from net/http.Dir
-	for _, name := range names {
-		if !valid(name) {
-			return "", errors.New("invalid character in path")
-		}
-
-		clean = append(clean, filepath.FromSlash(path.Clean("/"+name)))
-	}
-
-	return filepath.Join(clean...), nil
-}
-
-// getRepo returns the repository location, relative to s.Path.
-func (s *Server) getRepo(r *http.Request) string {
-	if strings.HasPrefix(fmt.Sprintf("%s", middleware.Pattern(r.Context())), "/:repo") {
-		return pat.Param(r, "repo")
-	}
-
-	return "."
-}
-
-// getPath returns the path for a file type in the repo.
-func (s *Server) getPath(r *http.Request, fileType string) (string, error) {
-	if !s.isValidType(fileType) {
-		return "", errors.New("invalid file type")
-	}
-	return join(s.Path, s.getRepo(r), fileType)
-}
-
-// getFilePath returns the path for a file in the repo.
-func (s *Server) getFilePath(r *http.Request, fileType, name string) (string, error) {
-	if !s.isValidType(fileType) {
-		return "", errors.New("invalid file type")
-	}
-
-	if s.isHashed(fileType) {
-		if len(name) < 2 {
-			return "", errors.New("file name is too short")
-		}
-
-		return join(s.Path, s.getRepo(r), fileType, name[:2], name)
-	}
-
-	return join(s.Path, s.getRepo(r), fileType, name)
-}
-
-// getUser returns the username from the request, or an empty string if none.
-func (s *Server) getUser(r *http.Request) string {
-	username, _, ok := r.BasicAuth()
-	if !ok {
-		return ""
-	}
-	return username
-}
-
-// getMetricLabels returns the prometheus labels from the request.
-func (s *Server) getMetricLabels(r *http.Request) prometheus.Labels {
-	labels := prometheus.Labels{
-		"user": s.getUser(r),
-		"repo": s.getRepo(r),
-		"type": pat.Param(r, "type"),
-	}
-	return labels
-}
-
-// isUserPath checks if a request path is accessible by the user when using
-// private repositories.
-func isUserPath(username, path string) bool {
-	prefix := "/" + username
-	if !strings.HasPrefix(path, prefix) {
-		return false
-	}
-	return len(path) == len(prefix) || path[len(prefix)] == '/'
-}
-
-// AuthHandler wraps h with a http.HandlerFunc that performs basic authentication against the user/passwords pairs
-// stored in f and returns the http.HandlerFunc.
-func (s *Server) AuthHandler(f *HtpasswdFile, h http.Handler) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		username, password, ok := r.BasicAuth()
-		if !ok || !f.Validate(username, password) {
-			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
-			return
-		}
-		if s.PrivateRepos && !isUserPath(username, r.URL.Path) && r.URL.Path != "/metrics" {
-			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
-			return
-		}
-		h.ServeHTTP(w, r)
-	}
-}
-
-// CheckConfig checks whether a configuration exists.
-func (s *Server) CheckConfig(w http.ResponseWriter, r *http.Request) {
-	if s.Debug {
-		log.Println("CheckConfig()")
-	}
-	cfg, err := s.getPath(r, "config")
-	if err != nil {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
+	} else if urlPath == "/config" {
+		switch r.Method {
+		case "HEAD":
+			h.checkConfig(w, r)
+		case "GET":
+			h.getConfig(w, r)
+		case "POST":
+			h.saveConfig(w, r)
+		case "DELETE":
+			h.deleteConfig(w, r)
+		default:
+			httpMethodNotAllowed(w, []string{"HEAD", "GET", "POST", "DELETE"})
+		}
+		return
+	} else if objectType, objectID := h.getObject(urlPath); objectType != "" {
+		if objectID == "" {
+			// TODO: add HEAD
+			switch r.Method {
+			case "GET":
+				h.listBlobs(w, r)
+			default:
+				httpMethodNotAllowed(w, []string{"GET"})
+			}
+			return
+		} else {
+			switch r.Method {
+			case "HEAD":
+				h.checkBlob(w, r)
+			case "GET":
+				h.getBlob(w, r)
+			case "POST":
+				h.saveBlob(w, r)
+			case "DELETE":
+				h.deleteBlob(w, r)
+			default:
+				httpMethodNotAllowed(w, []string{"HEAD", "GET", "POST", "DELETE"})
+			}
+			return
+		}
 	}
+	httpDefaultError(w, http.StatusNotFound)
+}
+
+// getObject parses the URL path and returns the objectType and objectID,
+// if any. The objectID is optional.
+func (h *Handler) getObject(urlPath string) (objectType, objectID string) {
+	if m := BlobPathRE.FindStringSubmatch(urlPath); len(m) > 0 {
+		if len(m) == 2 || m[2] == "" {
+			return m[1], ""
+		}
+		return m[1], m[2]
+	} else {
+		return "", ""
+	}
+}
+
+// getSubPath returns the path for a file or subdir in the root of the repo.
+func (h *Handler) getSubPath(name string) string {
+	return filepath.Join(h.path, name)
+}
+
+// getObjectPath returns the path for an object file in the repo.
+// The passed in objectType and objectID must be valid due to earlier validation
+func (h *Handler) getObjectPath(objectType, objectID string) string {
+	// If we hit an error, this is a programming error, because all of these
+	// must have been validated before. We still check them here as a safeguard.
+	if objectType == "" || objectID == "" {
+		panic("invalid objectType or objectID")
+	}
+	if isHashed(objectType) {
+		if len(objectID) < 2 {
+			// Should never happen, because BlobPathRE checked this
+			panic("getObjectPath: objectID shorter than 2 chars")
+		}
+		// Added another dir in between with the first two characters of the hash
+		return filepath.Join(h.path, objectType, objectID[:2], objectID)
+	}
+
+	return filepath.Join(h.path, objectType, objectID)
+}
+
+// sendMetric calls op.BlobMetricFunc if set. See its signature for details.
+func (h *Handler) sendMetric(objectType string, operation BlobOperation, nBytes uint64) {
+	if f := h.opt.BlobMetricFunc; f != nil {
+		f(objectType, operation, nBytes)
+	}
+}
+
+// needSize tells you if we need the file size for metrics of quota accounting
+func (h *Handler) needSize() bool {
+	return h.opt.BlobMetricFunc != nil || h.opt.MaxRepoSize > 0
+}
+
+// incrementRepoSpaceUsage increments the repo space usage if quota are enabled
+func (h *Handler) incrementRepoSpaceUsage(by int64) {
+	if h.opt.MaxRepoSize > 0 {
+		// FIXME: call the actual incrementRepoSpaceUsage
+	}
+}
+
+// wrapFileWriter wraps the file writer if repo quota are enabled, and returns it
+// as is if not.
+// If an error occurs, it returns both an error and the appropriate HTTP error code.
+func (h *Handler) wrapFileWriter(r *http.Request, w io.Writer) (io.Writer, int, error) {
+	var errCode int
+	if h.opt.MaxRepoSize > 0 {
+		// FIXME: optionally wrap with maxSizeWriter
+		// FIXME: return h.maxSizeWriter(r, tf)
+		// if err != nil && h.opt.Debug {
+		//    log.Printf("wrapFileWriter: %v", err)
+		//}
+	}
+	return w, 0, nil
+}
+
+// checkConfig checks whether a configuration exists.
+func (h *Handler) checkConfig(w http.ResponseWriter, r *http.Request) {
+	if h.opt.Debug {
+		log.Println("checkConfig()")
+	}
+	cfg := h.getSubPath("config")
 
 	st, err := os.Stat(cfg)
 	if err != nil {
-		if s.Debug {
+		if h.opt.Debug {
 			log.Print(err)
 		}
-		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+		httpDefaultError(w, http.StatusNotFound)
 		return
 	}
 
 	w.Header().Add("Content-Length", fmt.Sprint(st.Size()))
 }
 
-// GetConfig allows for a config to be retrieved.
-func (s *Server) GetConfig(w http.ResponseWriter, r *http.Request) {
-	if s.Debug {
-		log.Println("GetConfig()")
+// getConfig allows for a config to be retrieved.
+func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
+	if h.opt.Debug {
+		log.Println("getConfig()")
 	}
-	cfg, err := s.getPath(r, "config")
-	if err != nil {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
+	cfg := h.getSubPath("config")
 
 	bytes, err := ioutil.ReadFile(cfg)
 	if err != nil {
-		if s.Debug {
+		if h.opt.Debug {
 			log.Print(err)
 		}
-		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+		httpDefaultError(w, http.StatusNotFound)
 		return
 	}
 
 	_, _ = w.Write(bytes)
 }
 
-// SaveConfig allows for a config to be saved.
-func (s *Server) SaveConfig(w http.ResponseWriter, r *http.Request) {
-	if s.Debug {
-		log.Println("SaveConfig()")
+// saveConfig allows for a config to be saved.
+func (h *Handler) saveConfig(w http.ResponseWriter, r *http.Request) {
+	if h.opt.Debug {
+		log.Println("saveConfig()")
 	}
-	cfg, err := s.getPath(r, "config")
-	if err != nil {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
+	cfg := h.getSubPath("config")
 
-	f, err := os.OpenFile(cfg, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
+	f, err := os.OpenFile(cfg, os.O_CREATE|os.O_WRONLY|os.O_EXCL, h.opt.FileMode)
 	if err != nil && os.IsExist(err) {
-		if s.Debug {
+		if h.opt.Debug {
 			log.Print(err)
 		}
-		http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+		httpDefaultError(w, http.StatusForbidden)
 		return
 	}
 
 	_, err = io.Copy(f, r.Body)
 	if err != nil {
-		if s.Debug {
+		if h.opt.Debug {
 			log.Print(err)
 		}
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		httpDefaultError(w, http.StatusInternalServerError)
 		return
 	}
 
 	err = f.Close()
 	if err != nil {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		httpDefaultError(w, http.StatusInternalServerError)
 		return
 	}
 
 	_ = r.Body.Close()
 }
 
-// DeleteConfig removes a config.
-func (s *Server) DeleteConfig(w http.ResponseWriter, r *http.Request) {
-	if s.Debug {
-		log.Println("DeleteConfig()")
+// deleteConfig removes a config.
+func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
+	if h.opt.Debug {
+		log.Println("deleteConfig()")
 	}
 
-	if s.AppendOnly {
-		http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+	if h.opt.AppendOnly {
+		httpDefaultError(w, http.StatusForbidden)
 		return
 	}
 
-	cfg, err := s.getPath(r, "config")
-	if err != nil {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
+	cfg := h.getSubPath("config")
 
 	if err := os.Remove(cfg); err != nil {
-		if s.Debug {
+		if h.opt.Debug {
 			log.Print(err)
 		}
 		if os.IsNotExist(err) {
-			http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+			httpDefaultError(w, http.StatusNotFound)
 		} else {
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			httpDefaultError(w, http.StatusInternalServerError)
 		}
 		return
 	}
@@ -287,52 +336,53 @@ const (
 	mimeTypeAPIV2 = "application/vnd.x.restic.rest.v2"
 )
 
-// ListBlobs lists all blobs of a given type in an arbitrary order.
-func (s *Server) ListBlobs(w http.ResponseWriter, r *http.Request) {
-	if s.Debug {
-		log.Println("ListBlobs()")
+// listBlobs lists all blobs of a given type in an arbitrary order.
+func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
+	if h.opt.Debug {
+		log.Println("listBlobs()")
 	}
 
 	switch r.Header.Get("Accept") {
 	case mimeTypeAPIV2:
-		s.ListBlobsV2(w, r)
+		h.listBlobsV2(w, r)
 	default:
-		s.ListBlobsV1(w, r)
+		h.listBlobsV1(w, r)
 	}
 }
 
-// ListBlobsV1 lists all blobs of a given type in an arbitrary order.
-func (s *Server) ListBlobsV1(w http.ResponseWriter, r *http.Request) {
-	if s.Debug {
-		log.Println("ListBlobsV1()")
+// listBlobsV1 lists all blobs of a given type in an arbitrary order.
+// TODO: unify listBlobsV1 and listBlobsV2
+func (h *Handler) listBlobsV1(w http.ResponseWriter, r *http.Request) {
+	if h.opt.Debug {
+		log.Println("listBlobsV1()")
 	}
-	fileType := pat.Param(r, "type")
-	path, err := s.getPath(r, fileType)
-	if err != nil {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+	objectType, _ := h.getObject(r.URL.Path)
+	if objectType == "" {
+		httpDefaultError(w, http.StatusInternalServerError)
 		return
 	}
+	path := h.getSubPath(objectType)
 
 	items, err := ioutil.ReadDir(path)
 	if err != nil {
-		if s.Debug {
+		if h.opt.Debug {
 			log.Print(err)
 		}
-		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+		httpDefaultError(w, http.StatusNotFound)
 		return
 	}
 
 	var names []string
 	for _, i := range items {
-		if s.isHashed(fileType) {
+		if isHashed(objectType) {
 			subpath := filepath.Join(path, i.Name())
 			var subitems []os.FileInfo
 			subitems, err = ioutil.ReadDir(subpath)
 			if err != nil {
-				if s.Debug {
+				if h.opt.Debug {
 					log.Print(err)
 				}
-				http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+				httpDefaultError(w, http.StatusNotFound)
 				return
 			}
 			for _, f := range subitems {
@@ -345,10 +395,10 @@ func (s *Server) ListBlobsV1(w http.ResponseWriter, r *http.Request) {
 
 	data, err := json.Marshal(names)
 	if err != nil {
-		if s.Debug {
+		if h.opt.Debug {
 			log.Print(err)
 		}
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		httpDefaultError(w, http.StatusInternalServerError)
 		return
 	}
 
@@ -362,38 +412,40 @@ type Blob struct {
 	Size int64  `json:"size"`
 }
 
-// ListBlobsV2 lists all blobs of a given type, together with their sizes, in an arbitrary order.
-func (s *Server) ListBlobsV2(w http.ResponseWriter, r *http.Request) {
-	if s.Debug {
-		log.Println("ListBlobsV2()")
+// listBlobsV2 lists all blobs of a given type, together with their sizes, in an arbitrary order.
+// TODO: unify listBlobsV1 and listBlobsV2
+func (h *Handler) listBlobsV2(w http.ResponseWriter, r *http.Request) {
+	if h.opt.Debug {
+		log.Println("listBlobsV2()")
 	}
-	fileType := pat.Param(r, "type")
-	path, err := s.getPath(r, fileType)
-	if err != nil {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+
+	objectType, _ := h.getObject(r.URL.Path)
+	if objectType == "" {
+		httpDefaultError(w, http.StatusInternalServerError)
 		return
 	}
+	path := h.getSubPath(objectType)
 
 	items, err := ioutil.ReadDir(path)
 	if err != nil {
-		if s.Debug {
+		if h.opt.Debug {
 			log.Print(err)
 		}
-		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+		httpDefaultError(w, http.StatusNotFound)
 		return
 	}
 
 	var blobs []Blob
 	for _, i := range items {
-		if s.isHashed(fileType) {
+		if isHashed(objectType) {
 			subpath := filepath.Join(path, i.Name())
 			var subitems []os.FileInfo
 			subitems, err = ioutil.ReadDir(subpath)
 			if err != nil {
-				if s.Debug {
+				if h.opt.Debug {
 					log.Print(err)
 				}
-				http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+				httpDefaultError(w, http.StatusNotFound)
 				return
 			}
 			for _, f := range subitems {
@@ -406,10 +458,10 @@ func (s *Server) ListBlobsV2(w http.ResponseWriter, r *http.Request) {
 
 	data, err := json.Marshal(blobs)
 	if err != nil {
-		if s.Debug {
+		if h.opt.Debug {
 			log.Print(err)
 		}
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		httpDefaultError(w, http.StatusInternalServerError)
 		return
 	}
 
@@ -417,48 +469,50 @@ func (s *Server) ListBlobsV2(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
-// CheckBlob tests whether a blob exists.
-func (s *Server) CheckBlob(w http.ResponseWriter, r *http.Request) {
-	if s.Debug {
-		log.Println("CheckBlob()")
+// checkBlob tests whether a blob exists.
+func (h *Handler) checkBlob(w http.ResponseWriter, r *http.Request) {
+	if h.opt.Debug {
+		log.Println("checkBlob()")
 	}
 
-	path, err := s.getFilePath(r, pat.Param(r, "type"), pat.Param(r, "name"))
-	if err != nil {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+	objectType, objectID := h.getObject(r.URL.Path)
+	if objectType == "" || objectID != "" {
+		httpDefaultError(w, http.StatusInternalServerError)
 		return
 	}
+	path := h.getObjectPath(objectType, objectID)
 
 	st, err := os.Stat(path)
 	if err != nil {
-		if s.Debug {
+		if h.opt.Debug {
 			log.Print(err)
 		}
-		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+		httpDefaultError(w, http.StatusNotFound)
 		return
 	}
 
 	w.Header().Add("Content-Length", fmt.Sprint(st.Size()))
 }
 
-// GetBlob retrieves a blob from the repository.
-func (s *Server) GetBlob(w http.ResponseWriter, r *http.Request) {
-	if s.Debug {
-		log.Println("GetBlob()")
+// getBlob retrieves a blob from the repository.
+func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
+	if h.opt.Debug {
+		log.Println("getBlob()")
 	}
 
-	path, err := s.getFilePath(r, pat.Param(r, "type"), pat.Param(r, "name"))
-	if err != nil {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+	objectType, objectID := h.getObject(r.URL.Path)
+	if objectType == "" || objectID != "" {
+		httpDefaultError(w, http.StatusInternalServerError)
 		return
 	}
+	path := h.getObjectPath(objectType, objectID)
 
 	file, err := os.Open(path)
 	if err != nil {
-		if s.Debug {
+		if h.opt.Debug {
 			log.Print(err)
 		}
-		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+		httpDefaultError(w, http.StatusNotFound)
 		return
 	}
 
@@ -466,149 +520,115 @@ func (s *Server) GetBlob(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(wc, r, "", time.Unix(0, 0), file)
 
 	if err = file.Close(); err != nil {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		httpDefaultError(w, http.StatusInternalServerError)
 		return
 	}
 
-	if s.Prometheus {
-		labels := s.getMetricLabels(r)
-		metricBlobReadTotal.With(labels).Inc()
-		metricBlobReadBytesTotal.With(labels).Add(float64(wc.Count()))
-	}
+	h.sendMetric(objectType, BlobRead, wc.Count())
 }
 
-// tallySize counts the size of the contents of path.
-func tallySize(path string) (int64, error) {
-	if path == "" {
-		path = "."
-	}
-	var size int64
-	err := filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		size += info.Size()
-		return nil
-	})
-	return size, err
-}
-
-// SaveBlob saves a blob to the repository.
-func (s *Server) SaveBlob(w http.ResponseWriter, r *http.Request) {
-	if s.Debug {
-		log.Println("SaveBlob()")
+// saveBlob saves a blob to the repository.
+func (h *Handler) saveBlob(w http.ResponseWriter, r *http.Request) {
+	if h.opt.Debug {
+		log.Println("saveBlob()")
 	}
 
-	path, err := s.getFilePath(r, pat.Param(r, "type"), pat.Param(r, "name"))
-	if err != nil {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+	objectType, objectID := h.getObject(r.URL.Path)
+	if objectType == "" || objectID != "" {
+		httpDefaultError(w, http.StatusInternalServerError)
 		return
 	}
+	path := h.getObjectPath(objectType, objectID)
 
-	tf, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
+	tf, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, h.opt.FileMode)
 	if os.IsNotExist(err) {
 		// the error is caused by a missing directory, create it and retry
-		mkdirErr := os.MkdirAll(filepath.Dir(path), 0700)
+		mkdirErr := os.MkdirAll(filepath.Dir(path), h.opt.DirMode)
 		if mkdirErr != nil {
 			log.Print(mkdirErr)
 		} else {
 			// try again
-			tf, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
+			tf, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, h.opt.FileMode)
 		}
 	}
 	if os.IsExist(err) {
-		http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+		httpDefaultError(w, http.StatusForbidden)
 		return
 	}
 	if err != nil {
-		if s.Debug {
+		if h.opt.Debug {
 			log.Print(err)
 		}
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		httpDefaultError(w, http.StatusInternalServerError)
 		return
 	}
 
-	// ensure this blob does not put us over the repo size limit (if there is one)
-	var outFile io.Writer = tf
-	if s.MaxRepoSize != 0 {
-		var errCode int
-		outFile, errCode, err = s.maxSizeWriter(r, tf)
-		if err != nil {
-			if s.Debug {
-				log.Println(err)
-			}
-			if errCode > 0 {
-				http.Error(w, http.StatusText(errCode), errCode)
-			}
-			return
+	// ensure this blob does not put us over the quota size limit (if there is one)
+	outFile, errCode, err := h.wrapFileWriter(r, tf)
+	if err != nil {
+		if h.opt.Debug {
+			log.Println(err)
 		}
+		httpDefaultError(w, errCode)
+		return
 	}
 
 	written, err := io.Copy(outFile, r.Body)
 	if err != nil {
 		_ = tf.Close()
 		_ = os.Remove(path)
-		if s.MaxRepoSize > 0 {
-			s.incrementRepoSpaceUsage(-written)
-		}
-		if s.Debug {
+		h.incrementRepoSpaceUsage(-written)
+		if h.opt.Debug {
 			log.Print(err)
 		}
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		httpDefaultError(w, http.StatusBadRequest)
 		return
 	}
 
 	if err := tf.Sync(); err != nil {
 		_ = tf.Close()
 		_ = os.Remove(path)
-		if s.MaxRepoSize > 0 {
-			s.incrementRepoSpaceUsage(-written)
-		}
-		if s.Debug {
+		h.incrementRepoSpaceUsage(-written)
+		if h.opt.Debug {
 			log.Print(err)
 		}
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		httpDefaultError(w, http.StatusInternalServerError)
 		return
 	}
 
 	if err := tf.Close(); err != nil {
 		_ = os.Remove(path)
-		if s.MaxRepoSize > 0 {
-			s.incrementRepoSpaceUsage(-written)
-		}
-		if s.Debug {
+		h.incrementRepoSpaceUsage(-written)
+		if h.opt.Debug {
 			log.Print(err)
 		}
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		httpDefaultError(w, http.StatusInternalServerError)
 		return
 	}
 
-	if s.Prometheus {
-		labels := s.getMetricLabels(r)
-		metricBlobWriteTotal.With(labels).Inc()
-		metricBlobWriteBytesTotal.With(labels).Add(float64(written))
-	}
+	h.sendMetric(objectType, BlobWrite, uint64(written))
 }
 
-// DeleteBlob deletes a blob from the repository.
-func (s *Server) DeleteBlob(w http.ResponseWriter, r *http.Request) {
-	if s.Debug {
-		log.Println("DeleteBlob()")
+// deleteBlob deletes a blob from the repository.
+func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request) {
+	if h.opt.Debug {
+		log.Println("deleteBlob()")
 	}
 
-	if s.AppendOnly && pat.Param(r, "type") != "locks" {
-		http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+	objectType, objectID := h.getObject(r.URL.Path)
+	if objectType == "" || objectID != "" {
+		httpDefaultError(w, http.StatusInternalServerError)
+		return
+	}
+	if h.opt.AppendOnly && objectType != "locks" {
+		httpDefaultError(w, http.StatusForbidden)
 		return
 	}
 
-	path, err := s.getFilePath(r, pat.Param(r, "type"), pat.Param(r, "name"))
-	if err != nil {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
+	path := h.getObjectPath(objectType, objectID)
 
 	var size int64
-	if s.Prometheus || s.MaxRepoSize > 0 {
+	if h.needSize() {
 		stat, err := os.Stat(path)
 		if err == nil {
 			size = stat.Size()
@@ -616,68 +636,53 @@ func (s *Server) DeleteBlob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := os.Remove(path); err != nil {
-		if s.Debug {
+		if h.opt.Debug {
 			log.Print(err)
 		}
 		if os.IsNotExist(err) {
-			http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+			httpDefaultError(w, http.StatusNotFound)
 		} else {
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			httpDefaultError(w, http.StatusInternalServerError)
 		}
 		return
 	}
 
-	if s.MaxRepoSize > 0 {
-		s.incrementRepoSpaceUsage(-size)
-	}
-	if s.Prometheus {
-		labels := s.getMetricLabels(r)
-		metricBlobDeleteTotal.With(labels).Inc()
-		metricBlobDeleteBytesTotal.With(labels).Add(float64(size))
-	}
+	h.incrementRepoSpaceUsage(-size)
+	h.sendMetric(objectType, BlobDelete, uint64(size))
 }
 
-// CreateRepo creates repository directories.
-func (s *Server) CreateRepo(w http.ResponseWriter, r *http.Request) {
-	if s.Debug {
-		log.Println("CreateRepo()")
-	}
-
-	repo, err := join(s.Path, s.getRepo(r))
-	if err != nil {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
+// createRepo creates repository directories.
+func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
+	if h.opt.Debug {
+		log.Println("createRepo()")
 	}
 
 	if r.URL.Query().Get("create") != "true" {
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		httpDefaultError(w, http.StatusBadRequest)
 		return
 	}
 
-	log.Printf("Creating repository directories in %s\n", repo)
+	log.Printf("Creating repository directories in %s\n", h.path)
 
-	if err := os.MkdirAll(repo, 0700); err != nil {
+	if err := os.MkdirAll(h.path, h.opt.DirMode); err != nil {
 		log.Print(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		httpDefaultError(w, http.StatusInternalServerError)
 		return
 	}
 
-	for _, d := range validTypes {
-		if d == "config" {
-			continue
-		}
-
-		if err := os.MkdirAll(filepath.Join(repo, d), 0700); err != nil {
+	for _, d := range ObjectTypes {
+		if err := os.Mkdir(filepath.Join(h.path, d), h.opt.DirMode); err != nil && !os.IsExist(err) {
 			log.Print(err)
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			httpDefaultError(w, http.StatusInternalServerError)
 			return
 		}
 	}
 
 	for i := 0; i < 256; i++ {
-		if err := os.MkdirAll(filepath.Join(repo, "data", fmt.Sprintf("%02x", i)), 0700); err != nil {
+		dirPath := filepath.Join(h.path, "data", fmt.Sprintf("%02x", i))
+		if err := os.Mkdir(dirPath, h.opt.DirMode); err != nil && !os.IsExist(err) {
 			log.Print(err)
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			httpDefaultError(w, http.StatusInternalServerError)
 			return
 		}
 	}
