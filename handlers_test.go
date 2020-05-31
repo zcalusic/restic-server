@@ -265,7 +265,7 @@ func TestSplitURLPath(t *testing.T) {
 		{"/foo/bar", 2, []string{"foo"}, "/bar"},
 		{"/locks/", 2, nil, "/locks/"},
 		// This function only splits, it does not check the path components!
-		{"/././locks/", 2, []string{"..", ".."}, "/locks/"},
+		{"/././locks/", 2, []string{".", "."}, "/locks/"},
 		{"/../../locks/", 2, []string{"..", ".."}, "/locks/"},
 		{"///locks/", 2, []string{"", ""}, "/locks/"},
 		{"////locks/", 2, []string{"", ""}, "//locks/"},
