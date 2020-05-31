@@ -32,30 +32,41 @@ type Server struct {
 	quotaManager *quota.Manager
 }
 
+// MaxFolderDepth is the maxDepth param passed to splitURLPath.
+// A max depth of 2 mean that we accept folders like: '/', '/foo' and '/foo/bar'
+// TODO: Move to a Server option
+const MaxFolderDepth = 2
+
+// httpDefaultError write a HTTP error with the default description
+func httpDefaultError(w http.ResponseWriter, code int) {
+	http.Error(w, http.StatusText(code), code)
+}
+
 // ServeHTTP makes this server an http.Handler. It handlers the administrative
 // part of the request (figuring out the filesystem location, performing
 // authentication, etc) and then passes it on to repo.Handler for actual
 // REST API processing.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// First of all, check auth
+	// First of all, check auth (will always pass if NoAuth is set)
 	username, ok := s.checkAuth(r)
 	if !ok {
-		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		httpDefaultError(w, http.StatusUnauthorized)
+		return
 	}
 
 	// Perform the path parsing to determine the repo folder and remainder for the
-	// repo handler
-	folderPath, remainder := splitURLPath(r.URL.Path, 2) // FIXME: configurable
+	// repo handler.
+	folderPath, remainder := splitURLPath(r.URL.Path, MaxFolderDepth)
 	if !folderPathValid(folderPath) {
 		log.Printf("Invalid request path: %s", r.URL.Path)
-		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+		httpDefaultError(w, http.StatusNotFound)
 		return
 	}
 
 	// Check if the current user is allowed to access this path
 	if !s.NoAuth && s.PrivateRepos {
 		if len(folderPath) == 0 || folderPath[0] != username {
-			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+			httpDefaultError(w, http.StatusUnauthorized)
 			return
 		}
 	}
@@ -65,7 +76,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// We did not expect an error at this stage, because we just checked the path
 		log.Printf("Unexpected join error for path %q", r.URL.Path)
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		httpDefaultError(w, http.StatusNotFound)
 		return
 	}
 
@@ -81,7 +92,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	repoHandler, err := repo.New(fsPath, opt)
 	if err != nil {
 		log.Printf("repo.New error: %v", err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		httpDefaultError(w, http.StatusInternalServerError)
 		return
 	}
 	r.URL.Path = remainder // strip folderPath for next handler
@@ -170,7 +181,7 @@ func splitURLPath(urlPath string, maxDepth int) (folderPath []string, remainder 
 // safe.
 func folderPathValid(folderPath []string) bool {
 	for _, name := range folderPath {
-		if name == "" || name == ".." || !valid(name) {
+		if name == "" || name == ".." || name == "." || !valid(name) {
 			return false
 		}
 	}

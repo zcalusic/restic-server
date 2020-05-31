@@ -12,6 +12,10 @@ import (
 	"github.com/restic/rest-server/quota"
 )
 
+const (
+	GiB = 1024 * 1024 * 1024
+)
+
 func (s *Server) debugHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
@@ -58,7 +62,7 @@ func NewHandler(server *Server) (http.Handler, error) {
 			return nil, err
 		}
 		server.quotaManager = qm
-		log.Printf("Quota initialized, currenly using %.2f GiB", float64(qm.SpaceUsed()/1024/1024))
+		log.Printf("Quota initialized, currenly using %.2f GiB", float64(qm.SpaceUsed())/GiB)
 	}
 
 	mux := http.NewServeMux()

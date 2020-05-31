@@ -63,7 +63,7 @@ func makeBlobMetricFunc(username string, folderPath []string) repo.BlobMetricFun
 	var f repo.BlobMetricFunc = func(objectType string, operation repo.BlobOperation, nBytes uint64) {
 		labels := prometheus.Labels{
 			"user": username,
-			"repo": strings.Join(folderPath, ""),
+			"repo": strings.Join(folderPath, "/"),
 			"type": objectType,
 		}
 		switch operation {

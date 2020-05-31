@@ -165,14 +165,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // getObject parses the URL path and returns the objectType and objectID,
 // if any. The objectID is optional.
 func (h *Handler) getObject(urlPath string) (objectType, objectID string) {
-	if m := BlobPathRE.FindStringSubmatch(urlPath); len(m) > 0 {
-		if len(m) == 2 || m[2] == "" {
-			return m[1], ""
-		}
-		return m[1], m[2]
-	} else {
-		return "", ""
+	m := BlobPathRE.FindStringSubmatch(urlPath)
+	if len(m) == 0 {
+		return "", "" // no match
 	}
+	if len(m) == 2 || m[2] == "" {
+		return m[1], "" // no objectID
+	}
+	return m[1], m[2]
 }
 
 // getSubPath returns the path for a file or subdir in the root of the repo.
