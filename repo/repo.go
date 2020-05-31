@@ -24,6 +24,10 @@ type Options struct {
 	DirMode    os.FileMode
 	FileMode   os.FileMode
 
+	// If set, we will panic when an internal server error happens. This
+	// makes it easier to debug such errors.
+	PanicOnError bool
+
 	BlobMetricFunc BlobMetricFunc
 	QuotaManager   *quota.Manager
 }
@@ -285,16 +289,13 @@ func (h *Handler) saveConfig(w http.ResponseWriter, r *http.Request) {
 
 	_, err = io.Copy(f, r.Body)
 	if err != nil {
-		if h.opt.Debug {
-			log.Print(err)
-		}
-		httpDefaultError(w, http.StatusInternalServerError)
+		h.internalServerError(w, err)
 		return
 	}
 
 	err = f.Close()
 	if err != nil {
-		httpDefaultError(w, http.StatusInternalServerError)
+		h.internalServerError(w, err)
 		return
 	}
 
@@ -321,7 +322,7 @@ func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
 		if os.IsNotExist(err) {
 			httpDefaultError(w, http.StatusNotFound)
 		} else {
-			httpDefaultError(w, http.StatusInternalServerError)
+			h.internalServerError(w, err)
 		}
 		return
 	}
@@ -354,7 +355,8 @@ func (h *Handler) listBlobsV1(w http.ResponseWriter, r *http.Request) {
 	}
 	objectType, _ := h.getObject(r.URL.Path)
 	if objectType == "" {
-		httpDefaultError(w, http.StatusInternalServerError)
+		h.internalServerError(w, fmt.Errorf(
+			"cannot determine object type: %s", r.URL.Path))
 		return
 	}
 	path := h.getSubPath(objectType)
@@ -391,10 +393,8 @@ func (h *Handler) listBlobsV1(w http.ResponseWriter, r *http.Request) {
 
 	data, err := json.Marshal(names)
 	if err != nil {
-		if h.opt.Debug {
-			log.Print(err)
-		}
-		httpDefaultError(w, http.StatusInternalServerError)
+		h.internalServerError(w, fmt.Errorf(
+			"cannot determine object type: %s", r.URL.Path))
 		return
 	}
 
@@ -417,7 +417,8 @@ func (h *Handler) listBlobsV2(w http.ResponseWriter, r *http.Request) {
 
 	objectType, _ := h.getObject(r.URL.Path)
 	if objectType == "" {
-		httpDefaultError(w, http.StatusInternalServerError)
+		h.internalServerError(w, fmt.Errorf(
+			"cannot determine object type: %s", r.URL.Path))
 		return
 	}
 	path := h.getSubPath(objectType)
@@ -454,10 +455,7 @@ func (h *Handler) listBlobsV2(w http.ResponseWriter, r *http.Request) {
 
 	data, err := json.Marshal(blobs)
 	if err != nil {
-		if h.opt.Debug {
-			log.Print(err)
-		}
-		httpDefaultError(w, http.StatusInternalServerError)
+		h.internalServerError(w, err)
 		return
 	}
 
@@ -472,8 +470,9 @@ func (h *Handler) checkBlob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	objectType, objectID := h.getObject(r.URL.Path)
-	if objectType == "" || objectID != "" {
-		httpDefaultError(w, http.StatusInternalServerError)
+	if objectType == "" || objectID == "" {
+		h.internalServerError(w, fmt.Errorf(
+			"cannot determine object type or id: %s", r.URL.Path))
 		return
 	}
 	path := h.getObjectPath(objectType, objectID)
@@ -497,8 +496,9 @@ func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	objectType, objectID := h.getObject(r.URL.Path)
-	if objectType == "" || objectID != "" {
-		httpDefaultError(w, http.StatusInternalServerError)
+	if objectType == "" || objectID == "" {
+		h.internalServerError(w, fmt.Errorf(
+			"cannot determine object type or id: %s", r.URL.Path))
 		return
 	}
 	path := h.getObjectPath(objectType, objectID)
@@ -516,7 +516,7 @@ func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(wc, r, "", time.Unix(0, 0), file)
 
 	if err = file.Close(); err != nil {
-		httpDefaultError(w, http.StatusInternalServerError)
+		h.internalServerError(w, err)
 		return
 	}
 
@@ -530,8 +530,9 @@ func (h *Handler) saveBlob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	objectType, objectID := h.getObject(r.URL.Path)
-	if objectType == "" || objectID != "" {
-		httpDefaultError(w, http.StatusInternalServerError)
+	if objectType == "" || objectID == "" {
+		h.internalServerError(w, fmt.Errorf(
+			"cannot determine object type or id: %s", r.URL.Path))
 		return
 	}
 	path := h.getObjectPath(objectType, objectID)
@@ -552,10 +553,7 @@ func (h *Handler) saveBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		if h.opt.Debug {
-			log.Print(err)
-		}
-		httpDefaultError(w, http.StatusInternalServerError)
+		h.internalServerError(w, err)
 		return
 	}
 
@@ -585,20 +583,14 @@ func (h *Handler) saveBlob(w http.ResponseWriter, r *http.Request) {
 		_ = tf.Close()
 		_ = os.Remove(path)
 		h.incrementRepoSpaceUsage(-written)
-		if h.opt.Debug {
-			log.Print(err)
-		}
-		httpDefaultError(w, http.StatusInternalServerError)
+		h.internalServerError(w, err)
 		return
 	}
 
 	if err := tf.Close(); err != nil {
 		_ = os.Remove(path)
 		h.incrementRepoSpaceUsage(-written)
-		if h.opt.Debug {
-			log.Print(err)
-		}
-		httpDefaultError(w, http.StatusInternalServerError)
+		h.internalServerError(w, err)
 		return
 	}
 
@@ -612,8 +604,9 @@ func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	objectType, objectID := h.getObject(r.URL.Path)
-	if objectType == "" || objectID != "" {
-		httpDefaultError(w, http.StatusInternalServerError)
+	if objectType == "" || objectID == "" {
+		h.internalServerError(w, fmt.Errorf(
+			"cannot determine object type or id: %s", r.URL.Path))
 		return
 	}
 	if h.opt.AppendOnly && objectType != "locks" {
@@ -638,7 +631,7 @@ func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request) {
 		if os.IsNotExist(err) {
 			httpDefaultError(w, http.StatusNotFound)
 		} else {
-			httpDefaultError(w, http.StatusInternalServerError)
+			h.internalServerError(w, err)
 		}
 		return
 	}
@@ -661,15 +654,13 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Creating repository directories in %s\n", h.path)
 
 	if err := os.MkdirAll(h.path, h.opt.DirMode); err != nil {
-		log.Print(err)
-		httpDefaultError(w, http.StatusInternalServerError)
+		h.internalServerError(w, err)
 		return
 	}
 
 	for _, d := range ObjectTypes {
 		if err := os.Mkdir(filepath.Join(h.path, d), h.opt.DirMode); err != nil && !os.IsExist(err) {
-			log.Print(err)
-			httpDefaultError(w, http.StatusInternalServerError)
+			h.internalServerError(w, err)
 			return
 		}
 	}
@@ -677,9 +668,19 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 	for i := 0; i < 256; i++ {
 		dirPath := filepath.Join(h.path, "data", fmt.Sprintf("%02x", i))
 		if err := os.Mkdir(dirPath, h.opt.DirMode); err != nil && !os.IsExist(err) {
-			log.Print(err)
-			httpDefaultError(w, http.StatusInternalServerError)
+			h.internalServerError(w, err)
 			return
 		}
 	}
+}
+
+// internalServerError is called to repot an internal server error.
+// The error message will be reported in the server logs. If PanicOnError
+// is set, this will panic instead, which makes debugging easier.
+func (h *Handler) internalServerError(w http.ResponseWriter, err error) {
+	log.Printf("ERROR: %v", err)
+	if h.opt.PanicOnError {
+		panic(fmt.Sprintf("internal server error: %v", err))
+	}
+	httpDefaultError(w, http.StatusInternalServerError)
 }

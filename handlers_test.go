@@ -211,9 +211,15 @@ func TestResticHandler(t *testing.T) {
 
 	// set append-only mode and configure path
 	mux, err := NewHandler(&Server{
-		AppendOnly: true,
-		Path:       tempdir,
+		AppendOnly:   true,
+		Path:         tempdir,
+		NoAuth:       true,
+		Debug:        true,
+		PanicOnError: true,
 	})
+	if err != nil {
+		t.Fatalf("error from NewHandler: %v", err)
+	}
 
 	// create the repo
 	checkRequest(t, mux.ServeHTTP,
