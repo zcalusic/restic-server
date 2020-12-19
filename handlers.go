@@ -1,6 +1,8 @@
 package restserver
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -554,7 +556,15 @@ func (s *Server) SaveBlob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	written, err := io.Copy(outFile, r.Body)
+	// calculate hash for current request
+	hasher := sha256.New()
+	written, err := io.Copy(outFile, io.TeeReader(r.Body, hasher))
+
+	// reject if file content doesn't match file name, the only config file is handled in SaveConfig
+	if err == nil && hex.EncodeToString(hasher.Sum(nil)) != pat.Param(r, "name") {
+		err = fmt.Errorf("file content does not match hash")
+	}
+
 	if err != nil {
 		_ = tf.Close()
 		_ = os.Remove(path)
