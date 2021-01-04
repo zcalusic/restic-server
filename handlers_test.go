@@ -193,6 +193,14 @@ func TestResticHandler(t *testing.T) {
 				},
 			},
 		},
+
+		// Test subrepos
+		{createOverwriteDeleteSeq(t, "/parent1/sub1/config")},
+		{createOverwriteDeleteSeq(t, "/parent1/sub1/data/"+randomID)},
+		{createOverwriteDeleteSeq(t, "/parent1/config")},
+		{createOverwriteDeleteSeq(t, "/parent1/data/"+randomID)},
+		{createOverwriteDeleteSeq(t, "/parent2/config")},
+		{createOverwriteDeleteSeq(t, "/parent2/data/"+randomID)},
 	}
 
 	// setup rclone with a local backend in a temporary directory
@@ -221,10 +229,12 @@ func TestResticHandler(t *testing.T) {
 		t.Fatalf("error from NewHandler: %v", err)
 	}
 
-	// create the repo
-	checkRequest(t, mux.ServeHTTP,
-		newRequest(t, "POST", "/?create=true", nil),
-		[]wantFunc{wantCode(http.StatusOK)})
+	// create the repos
+	for _, path := range []string{"/", "/parent1/sub1/", "/parent1/", "/parent2/"} {
+		checkRequest(t, mux.ServeHTTP,
+			newRequest(t, "POST", path+"?create=true", nil),
+			[]wantFunc{wantCode(http.StatusOK)})
+	}
 
 	for _, test := range tests {
 		t.Run("", func(t *testing.T) {
