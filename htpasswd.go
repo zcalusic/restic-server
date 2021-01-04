@@ -120,8 +120,11 @@ func (h *HtpasswdFile) expiryTimer() {
 		time.Sleep(5 * time.Second)
 		now := time.Now()
 		h.mutex.Lock()
+		var zeros [sha256.Size]byte
+		// try to wipe expired cache entries
 		for user, entry := range h.cache {
 			if entry.expiry.After(now) {
+				copy(entry.verifier, zeros[:])
 				delete(h.cache, user)
 			}
 		}
@@ -159,7 +162,13 @@ func (h *HtpasswdFile) Reload() error {
 
 	// Replace the Users map
 	h.mutex.Lock()
+	var zeros [sha256.Size]byte
+	// try to wipe the old cache entries
+	for _, entry := range h.cache {
+		copy(entry.verifier, zeros[:])
+	}
 	h.cache = make(map[string]cacheEntry)
+
 	h.users = users
 	h.mutex.Unlock()
 
