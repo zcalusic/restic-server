@@ -45,6 +45,16 @@ func (s *Server) checkAuth(r *http.Request) (username string, ok bool) {
 	return username, true
 }
 
+func (s *Server) wrapAuth(f http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := s.checkAuth(r); !ok {
+			httpDefaultError(w, http.StatusUnauthorized)
+			return
+		}
+		f(w, r)
+	}
+}
+
 // NewHandler returns the master HTTP multiplexer/router.
 func NewHandler(server *Server) (http.Handler, error) {
 	if !server.NoAuth {
@@ -67,8 +77,11 @@ func NewHandler(server *Server) (http.Handler, error) {
 
 	mux := http.NewServeMux()
 	if server.Prometheus {
-		// FIXME: need auth like in previous version?
-		mux.Handle("/metrics", promhttp.Handler())
+		if server.PrometheusNoAuth {
+			mux.Handle("/metrics", promhttp.Handler())
+		} else {
+			mux.HandleFunc("/metrics", server.wrapAuth(promhttp.Handler().ServeHTTP))
+		}
 	}
 	mux.Handle("/", server)
 

@@ -14,20 +14,21 @@ import (
 
 // Server encapsulates the rest-server's settings and repo management logic
 type Server struct {
-	Path         string
-	Listen       string
-	Log          string
-	CPUProfile   string
-	TLSKey       string
-	TLSCert      string
-	TLS          bool
-	NoAuth       bool
-	AppendOnly   bool
-	PrivateRepos bool
-	Prometheus   bool
-	Debug        bool
-	MaxRepoSize  int64
-	PanicOnError bool
+	Path             string
+	Listen           string
+	Log              string
+	CPUProfile       string
+	TLSKey           string
+	TLSCert          string
+	TLS              bool
+	NoAuth           bool
+	AppendOnly       bool
+	PrivateRepos     bool
+	Prometheus       bool
+	PrometheusNoAuth bool
+	Debug            bool
+	MaxRepoSize      int64
+	PanicOnError     bool
 
 	htpasswdFile *HtpasswdFile
 	quotaManager *quota.Manager
