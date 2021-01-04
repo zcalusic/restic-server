@@ -50,7 +50,7 @@ type HtpasswdFile struct {
 	path     string
 	stat     os.FileInfo
 	throttle chan struct{}
-	Users    map[string]string
+	users    map[string]string
 }
 
 // NewHtpasswdFromFile reads the users and passwords from a htpasswd file and returns them.  If an error is encountered,
@@ -130,7 +130,7 @@ func (h *HtpasswdFile) Reload() error {
 
 	// Replace the Users map
 	h.mutex.Lock()
-	h.Users = users
+	h.users = users
 	h.mutex.Unlock()
 
 	_ = r.Close()
@@ -178,7 +178,7 @@ func (h *HtpasswdFile) Validate(user string, password string) bool {
 	_ = h.ReloadCheck()
 
 	h.mutex.Lock()
-	realPassword, exists := h.Users[user]
+	realPassword, exists := h.users[user]
 	h.mutex.Unlock()
 
 	if !exists {
