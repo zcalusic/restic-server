@@ -234,6 +234,14 @@ func (h *HtpasswdFile) Validate(user string, password string) bool {
 	}
 
 	if cacheExists && subtle.ConstantTimeCompare(entry.verifier, hash.Sum(nil)) == 1 {
+		h.mutex.Lock()
+		// repurpose mutex to prevent concurrent cache updates
+		// extend cache entry
+		cache[user] = cacheEntry{
+			verifier: entry.verifier,
+			expiry:   time.Now().Add(PasswordCacheDuration),
+		}
+		h.mutex.Unlock()
 		return true
 	}
 
