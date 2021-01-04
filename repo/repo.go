@@ -393,8 +393,7 @@ func (h *Handler) listBlobsV1(w http.ResponseWriter, r *http.Request) {
 
 	data, err := json.Marshal(names)
 	if err != nil {
-		h.internalServerError(w, fmt.Errorf(
-			"cannot determine object type: %s", r.URL.Path))
+		h.internalServerError(w, err)
 		return
 	}
 
