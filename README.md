@@ -56,6 +56,7 @@ To learn how to use restic backup client with REST backend, please consult [rest
           --path string          data directory (default "/tmp/restic")
           --private-repos        users can only access their private repo
           --prometheus           enable Prometheus metrics
+          --prometheus-no-auth   disable auth for Prometheus /metrics endpoint
           --tls                  turn on TLS support
           --tls-cert string      TLS certificate path
           --tls-key string       TLS key path
@@ -121,7 +122,7 @@ or
 
 ## Prometheus support and Grafana dashboard
 
-The server can be started with `--prometheus` to expose [Prometheus](https://prometheus.io/) metrics at `/metrics`.
+The server can be started with `--prometheus` to expose [Prometheus](https://prometheus.io/) metrics at `/metrics`. If authenticaiton is enabled, this endpoint requires authentication for the 'metrics' user, but this can be overridden with the `--prometheus-no-auth` flag.
 
 This repository contains an example full stack Docker Compose setup with a Grafana dashboard in [examples/compose-with-grafana/](examples/compose-with-grafana/).
 
@@ -131,6 +132,8 @@ This repository contains an example full stack Docker Compose setup with a Grafa
 Compared to the SFTP backend, the REST backend has better performance, especially so if you can skip additional crypto overhead by using plain HTTP transport (restic already properly encrypts all data it sends, so using HTTPS is mostly about authentication).
 
 But, even if you use HTTPS transport, the REST protocol should be faster and more scalable, due to some inefficiencies of the SFTP protocol (everything needs to be transferred in chunks of 32 KiB at most, each packet needs to be acknowledged by the server).
+
+One important safety feature that Rest Server adds is the optional ability to run in append-only mode. This prevents an attacker from wiping your server backups when access is gained to the server being backed up.
 
 Finally, the Rest Server implementation is really simple and as such could be used on the low-end devices, no problem.  Also, in some cases, for example behind corporate firewalls, HTTP/S might be the only protocol allowed.  Here too REST backend might be the perfect option for your backup needs.
 

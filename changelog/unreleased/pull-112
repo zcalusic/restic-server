@@ -1,0 +1,22 @@
+Change: refactor handlers, add subrepo support
+
+We have split out all HTTP handling to a separate `repo` subpackage to cleanly
+separate the server code from the code that handles a single repository.
+
+The refactoring makes the code significantly easier to follow and understand,
+which in turn makes it easier to add new features, audit for security and debug
+issues.
+
+The new RepoHandler also makes it easier to reuse rest-server as a Go component in
+any other HTTP server.
+
+As part of the refactoring, support for multi-level repositories has been added, so
+now each user can have its own subrepositories. This feature is always enabled.
+
+Authentication for the Prometheus /metrics endpoint can now be disabled with the
+new `--prometheus-no-auth` flag.
+
+https://github.com/restic/restic/pull/112
+https://github.com/restic/restic/issues/109
+https://github.com/restic/restic/issues/107
+
