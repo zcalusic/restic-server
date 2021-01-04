@@ -62,7 +62,7 @@ func NewHandler(server *Server) (http.Handler, error) {
 			return nil, err
 		}
 		server.quotaManager = qm
-		log.Printf("Quota initialized, currenly using %.2f GiB", float64(qm.SpaceUsed())/GiB)
+		log.Printf("Quota initialized, currently using %.2f GiB", float64(qm.SpaceUsed())/GiB)
 	}
 
 	mux := http.NewServeMux()
