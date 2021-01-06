@@ -24,19 +24,20 @@ import (
 
 // Server determines how a Mux's handlers behave.
 type Server struct {
-	Path         string
-	Listen       string
-	Log          string
-	CPUProfile   string
-	TLSKey       string
-	TLSCert      string
-	TLS          bool
-	NoAuth       bool
-	AppendOnly   bool
-	PrivateRepos bool
-	Prometheus   bool
-	Debug        bool
-	MaxRepoSize  int64
+	Path           string
+	Listen         string
+	Log            string
+	CPUProfile     string
+	TLSKey         string
+	TLSCert        string
+	TLS            bool
+	NoAuth         bool
+	AppendOnly     bool
+	NoVerifyUpload bool
+	PrivateRepos   bool
+	Prometheus     bool
+	Debug          bool
+	MaxRepoSize    int64
 
 	repoSize int64 // must be accessed using sync/atomic
 }
@@ -556,13 +557,19 @@ func (s *Server) SaveBlob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// calculate hash for current request
-	hasher := sha256.New()
-	written, err := io.Copy(outFile, io.TeeReader(r.Body, hasher))
+	var written int64
 
-	// reject if file content doesn't match file name, the only config file is handled in SaveConfig
-	if err == nil && hex.EncodeToString(hasher.Sum(nil)) != pat.Param(r, "name") {
-		err = fmt.Errorf("file content does not match hash")
+	if s.NoVerifyUpload {
+		written, err = io.Copy(outFile, r.Body)
+	} else {
+		// calculate hash for current request
+		hasher := sha256.New()
+		written, err = io.Copy(outFile, io.TeeReader(r.Body, hasher))
+
+		// reject if file content doesn't match file name, the only config file is handled in SaveConfig
+		if err == nil && hex.EncodeToString(hasher.Sum(nil)) != pat.Param(r, "name") {
+			err = fmt.Errorf("file content does not match hash")
+		}
 	}
 
 	if err != nil {
