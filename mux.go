@@ -45,9 +45,14 @@ func (s *Server) checkAuth(r *http.Request) (username string, ok bool) {
 	return username, true
 }
 
-func (s *Server) wrapAuth(f http.HandlerFunc) http.HandlerFunc {
+func (s *Server) wrapMetricsAuth(f http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := s.checkAuth(r); !ok {
+		username, ok := s.checkAuth(r)
+		if !ok {
+			httpDefaultError(w, http.StatusUnauthorized)
+			return
+		}
+		if s.PrivateRepos && username != "metrics" {
 			httpDefaultError(w, http.StatusUnauthorized)
 			return
 		}
@@ -80,7 +85,7 @@ func NewHandler(server *Server) (http.Handler, error) {
 		if server.PrometheusNoAuth {
 			mux.Handle("/metrics", promhttp.Handler())
 		} else {
-			mux.HandleFunc("/metrics", server.wrapAuth(promhttp.Handler().ServeHTTP))
+			mux.HandleFunc("/metrics", server.wrapMetricsAuth(promhttp.Handler().ServeHTTP))
 		}
 	}
 	mux.Handle("/", server)
