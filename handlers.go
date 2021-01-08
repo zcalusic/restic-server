@@ -83,8 +83,20 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Allow per-user overrides
+	appendOnly := s.AppendOnly
+	privateRepos := s.PrivateRepos
+	if uc, ok := s.Config.Users[username]; ok {
+		if uc.AppendOnly != nil {
+			appendOnly = *uc.AppendOnly
+		}
+		if uc.PrivateRepos != nil {
+			privateRepos = *uc.PrivateRepos
+		}
+	}
+
 	// Check if the current user is allowed to access this path
-	if !s.NoAuth && s.PrivateRepos {
+	if !s.NoAuth && privateRepos {
 		if len(folderPath) == 0 || folderPath[0] != username {
 			httpDefaultError(w, http.StatusUnauthorized)
 			return
@@ -102,7 +114,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Pass the request to the repo.Handler
 	opt := repo.Options{
-		AppendOnly:   s.AppendOnly,
+		AppendOnly:   appendOnly,
 		Debug:        s.Debug,
 		QuotaManager: s.quotaManager, // may be nil
 		PanicOnError: s.PanicOnError,
