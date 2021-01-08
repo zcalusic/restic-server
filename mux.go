@@ -64,9 +64,16 @@ func (s *Server) wrapMetricsAuth(f http.HandlerFunc) http.HandlerFunc {
 func NewHandler(server *Server) (http.Handler, error) {
 	if !server.NoAuth {
 		var err error
-		server.htpasswdFile, err = NewHtpasswdFromFile(filepath.Join(server.Path, ".htpasswd"))
+		htpasswd := server.Config.Auth.HTPasswdFile
+		if htpasswd == "" {
+			htpasswd = ".htpasswd"
+		}
+		if !filepath.IsAbs(htpasswd) {
+			htpasswd = filepath.Join(server.Path, htpasswd)
+		}
+		server.htpasswdFile, err = NewHtpasswdFromFile(htpasswd)
 		if err != nil {
-			return nil, fmt.Errorf("cannot load .htpasswd (use --no-auth to disable): %v", err)
+			return nil, fmt.Errorf("cannot load htpasswd file (use --no-auth to disable): %s: %v", htpasswd, err)
 		}
 	}
 
