@@ -1,16 +1,18 @@
 package main
 
 import (
-	"errors"
+	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"runtime"
 	"runtime/pprof"
 
+	"github.com/PowerDNS/go-tlsconfig"
+	"github.com/c2h5oh/datasize"
 	restserver "github.com/restic/rest-server"
+	"github.com/restic/rest-server/config"
 	"github.com/spf13/cobra"
 )
 
@@ -25,56 +27,36 @@ var cmdRoot = &cobra.Command{
 	//Version:       fmt.Sprintf("rest-server %s compiled with %v on %v/%v\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH),
 }
 
-var server = restserver.Server{
-	Path:   "/tmp/restic",
-	Listen: ":8000",
-}
-
 var (
-	showVersion bool
-	cpuProfile  string
+	showVersion  bool
+	cpuProfile   string
+	maxSizeBytes uint64
+	tlsEnabled   bool
+	configFile   string
+	flagConfig   = config.Config{}
 )
 
 func init() {
 	flags := cmdRoot.Flags()
+	flags.StringVarP(&configFile, "config", "c", configFile, "path to YAML config file")
 	flags.StringVar(&cpuProfile, "cpu-profile", cpuProfile, "write CPU profile to file")
-	flags.BoolVar(&server.Debug, "debug", server.Debug, "output debug messages")
-	flags.StringVar(&server.Listen, "listen", server.Listen, "listen address")
-	flags.StringVar(&server.Log, "log", server.Log, "log HTTP requests in the combined log format")
-	flags.Int64Var(&server.MaxRepoSize, "max-size", server.MaxRepoSize, "the maximum size of the repository in bytes")
-	flags.StringVar(&server.Path, "path", server.Path, "data directory")
-	flags.BoolVar(&server.TLS, "tls", server.TLS, "turn on TLS support")
-	flags.StringVar(&server.TLSCert, "tls-cert", server.TLSCert, "TLS certificate path")
-	flags.StringVar(&server.TLSKey, "tls-key", server.TLSKey, "TLS key path")
-	flags.BoolVar(&server.NoAuth, "no-auth", server.NoAuth, "disable .htpasswd authentication")
-	flags.BoolVar(&server.AppendOnly, "append-only", server.AppendOnly, "enable append only mode")
-	flags.BoolVar(&server.PrivateRepos, "private-repos", server.PrivateRepos, "users can only access their private repo")
-	flags.BoolVar(&server.Prometheus, "prometheus", server.Prometheus, "enable Prometheus metrics")
-	flags.BoolVar(&server.Prometheus, "prometheus-no-auth", server.PrometheusNoAuth, "disable auth for Prometheus /metrics endpoint")
+	flags.BoolVar(&flagConfig.Debug, "debug", flagConfig.Debug, "output debug messages")
+	flags.StringVar(&flagConfig.Listen, "listen", flagConfig.Listen, "listen address")
+	flags.StringVar(&flagConfig.AccessLog, "log", flagConfig.AccessLog, "log HTTP requests in the combined log format")
+	flags.Uint64Var(&maxSizeBytes, "max-size", uint64(flagConfig.Quota.MaxSize), "the maximum size of the repository in bytes")
+	flags.StringVar(&flagConfig.Path, "path", flagConfig.Path, "data directory")
+	flags.BoolVar(&tlsEnabled, "tls", flagConfig.TLS.HasCertWithKey(), "turn on TLS support")
+	flags.StringVar(&flagConfig.TLS.CertFile, "tls-cert", flagConfig.TLS.CertFile, "TLS certificate path")
+	flags.StringVar(&flagConfig.TLS.KeyFile, "tls-key", flagConfig.TLS.KeyFile, "TLS key path")
+	flags.BoolVar(&flagConfig.Auth.Disabled, "no-auth", flagConfig.Auth.Disabled, "disable .htpasswd authentication")
+	flags.BoolVar(&flagConfig.AppendOnly, "append-only", flagConfig.AppendOnly, "enable append only mode")
+	flags.BoolVar(&flagConfig.PrivateRepos, "private-repos", flagConfig.PrivateRepos, "users can only access their private repo")
+	flags.BoolVar(&flagConfig.Metrics.Enabled, "prometheus", flagConfig.Metrics.Enabled, "enable Prometheus metrics")
+	flags.BoolVar(&flagConfig.Metrics.NoAuth, "prometheus-no-auth", flagConfig.Metrics.NoAuth, "disable auth for Prometheus /metrics endpoint")
 	flags.BoolVarP(&showVersion, "version", "V", showVersion, "output version and exit")
 }
 
 var version = "0.10.0-dev"
-
-func tlsSettings() (bool, string, string, error) {
-	var key, cert string
-	if !server.TLS && (server.TLSKey != "" || server.TLSCert != "") {
-		return false, "", "", errors.New("requires enabled TLS")
-	} else if !server.TLS {
-		return false, "", "", nil
-	}
-	if server.TLSKey != "" {
-		key = server.TLSKey
-	} else {
-		key = filepath.Join(server.Path, "private_key")
-	}
-	if server.TLSCert != "" {
-		cert = server.TLSCert
-	} else {
-		cert = filepath.Join(server.Path, "public_key")
-	}
-	return server.TLS, key, cert, nil
-}
 
 func runRoot(cmd *cobra.Command, args []string) error {
 	if showVersion {
@@ -84,7 +66,26 @@ func runRoot(cmd *cobra.Command, args []string) error {
 
 	log.SetFlags(0)
 
-	log.Printf("Data directory: %s", server.Path)
+	// Load config
+	conf := config.Default()
+	if configFile != "" {
+		if err := conf.LoadYAMLFile(configFile); err != nil {
+			return err
+		}
+	}
+
+	// Merge flag config
+	conf.Quota.MaxSize = datasize.ByteSize(maxSizeBytes)
+	conf.MergeFlags(flagConfig)
+	if conf.Debug {
+		log.Printf("Effective config:\n%s", conf.String())
+	}
+	if err := conf.Check(); err != nil {
+		return err
+	}
+	if tlsEnabled && !conf.TLS.HasCertWithKey() {
+		return fmt.Errorf("--tls set, but key and cert not configured")
+	}
 
 	if cpuProfile != "" {
 		f, err := os.Create(cpuProfile)
@@ -98,40 +99,51 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		defer pprof.StopCPUProfile()
 	}
 
-	if server.NoAuth {
+	log.Printf("Data directory: %s", conf.Path)
+	if conf.Auth.Disabled {
 		log.Println("Authentication disabled")
 	} else {
 		log.Println("Authentication enabled")
 	}
-
-	handler, err := restserver.NewHandler(&server)
-	if err != nil {
-		log.Fatalf("error: %v", err)
-	}
-
-	if server.PrivateRepos {
+	if conf.PrivateRepos {
 		log.Println("Private repositories enabled")
 	} else {
 		log.Println("Private repositories disabled")
 	}
 
-	enabledTLS, privateKey, publicKey, err := tlsSettings()
+	server, err := restserver.NewServer(*conf)
 	if err != nil {
 		return err
 	}
-	if !enabledTLS {
-		log.Printf("Starting server on %s\n", server.Listen)
-		err = http.ListenAndServe(server.Listen, handler)
-	} else {
-
-		log.Println("TLS enabled")
-		log.Printf("Private key: %s", privateKey)
-		log.Printf("Public key(certificate): %s", publicKey)
-		log.Printf("Starting server on %s\n", server.Listen)
-		err = http.ListenAndServeTLS(server.Listen, publicKey, privateKey, handler)
+	handler, err := restserver.NewHandler(server)
+	if err != nil {
+		return err
 	}
 
-	return err
+	ctx := context.Background()
+	if !conf.TLS.HasCertWithKey() {
+		log.Printf("Starting server on %s\n", conf.Listen)
+		return http.ListenAndServe(conf.Listen, handler)
+	} else {
+		log.Println("TLS enabled")
+		log.Printf("Starting server on %s\n", conf.Listen)
+		manager, err := tlsconfig.NewManager(ctx, conf.TLS, tlsconfig.Options{
+			IsServer: true,
+		})
+		if err != nil {
+			return err
+		}
+		tlsConfig, err := manager.TLSConfig()
+		if err != nil {
+			return err
+		}
+		hs := http.Server{
+			Addr:      conf.Listen,
+			Handler:   handler,
+			TLSConfig: tlsConfig,
+		}
+		return hs.ListenAndServeTLS("", "") // Certificates are handled by TLSConfig
+	}
 }
 
 func main() {
