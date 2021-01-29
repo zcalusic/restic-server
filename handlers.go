@@ -614,11 +614,33 @@ func (s *Server) SaveBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		// Don't call os.Remove(path) as this is prone to race conditions with parallel upload retries
+		if s.Debug {
+			log.Print(err)
+		}
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
 	if s.Prometheus {
 		labels := s.getMetricLabels(r)
 		metricBlobWriteTotal.With(labels).Inc()
 		metricBlobWriteBytesTotal.With(labels).Add(float64(written))
 	}
+}
+
+func syncDir(dirname string) error {
+	dir, err := os.Open(dirname)
+	if err != nil {
+		return err
+	}
+	err = dir.Sync()
+	if err != nil {
+		_ = dir.Close()
+		return err
+	}
+	return dir.Close()
 }
 
 // DeleteBlob deletes a blob from the repository.
