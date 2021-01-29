@@ -515,7 +515,20 @@ func (s *Server) SaveBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tf, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
+	_, err = os.Stat(path)
+	if err == nil {
+		http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+		return
+	}
+	if !os.IsNotExist(err) {
+		if s.Debug {
+			log.Print(err)
+		}
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	tf, err := ioutil.TempFile(filepath.Dir(path), ".rest-server-temp")
 	if os.IsNotExist(err) {
 		// the error is caused by a missing directory, create it and retry
 		mkdirErr := os.MkdirAll(filepath.Dir(path), 0700)
@@ -523,12 +536,8 @@ func (s *Server) SaveBlob(w http.ResponseWriter, r *http.Request) {
 			log.Print(mkdirErr)
 		} else {
 			// try again
-			tf, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
+			tf, err = ioutil.TempFile(filepath.Dir(path), ".rest-server-temp")
 		}
-	}
-	if os.IsExist(err) {
-		http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
-		return
 	}
 	if err != nil {
 		if s.Debug {
@@ -557,7 +566,7 @@ func (s *Server) SaveBlob(w http.ResponseWriter, r *http.Request) {
 	written, err := io.Copy(outFile, r.Body)
 	if err != nil {
 		_ = tf.Close()
-		_ = os.Remove(path)
+		_ = os.Remove(tf.Name())
 		if s.MaxRepoSize > 0 {
 			s.incrementRepoSpaceUsage(-written)
 		}
@@ -570,7 +579,7 @@ func (s *Server) SaveBlob(w http.ResponseWriter, r *http.Request) {
 
 	if err := tf.Sync(); err != nil {
 		_ = tf.Close()
-		_ = os.Remove(path)
+		_ = os.Remove(tf.Name())
 		if s.MaxRepoSize > 0 {
 			s.incrementRepoSpaceUsage(-written)
 		}
@@ -582,7 +591,19 @@ func (s *Server) SaveBlob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := tf.Close(); err != nil {
-		_ = os.Remove(path)
+		_ = os.Remove(tf.Name())
+		if s.MaxRepoSize > 0 {
+			s.incrementRepoSpaceUsage(-written)
+		}
+		if s.Debug {
+			log.Print(err)
+		}
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	if err := os.Rename(tf.Name(), path); err != nil {
+		_ = os.Remove(tf.Name())
 		if s.MaxRepoSize > 0 {
 			s.incrementRepoSpaceUsage(-written)
 		}
