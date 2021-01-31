@@ -217,8 +217,8 @@ func TestResticHandler(t *testing.T) {
 		},
 	}
 
-	// setup rclone with a local backend in a temporary directory
-	tempdir, err := ioutil.TempDir("", "rclone-restic-test-")
+	// setup the server with a local backend in a temporary directory
+	tempdir, err := ioutil.TempDir("", "rest-server-test-")
 	if err != nil {
 		t.Fatal(err)
 	}
