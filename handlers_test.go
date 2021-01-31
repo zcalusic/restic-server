@@ -84,6 +84,7 @@ func newRequest(t testing.TB, method, path string, body io.Reader) *http.Request
 // wantCode returns a function which checks that the response has the correct HTTP status code.
 func wantCode(code int) wantFunc {
 	return func(t testing.TB, res *httptest.ResponseRecorder) {
+		t.Helper()
 		if res.Code != code {
 			t.Errorf("wrong response code, want %v, got %v", code, res.Code)
 		}
@@ -93,6 +94,7 @@ func wantCode(code int) wantFunc {
 // wantBody returns a function which checks that the response has the data in the body.
 func wantBody(body string) wantFunc {
 	return func(t testing.TB, res *httptest.ResponseRecorder) {
+		t.Helper()
 		if res.Body == nil {
 			t.Errorf("body is nil, want %q", body)
 			return
@@ -106,6 +108,7 @@ func wantBody(body string) wantFunc {
 
 // checkRequest uses f to process the request and runs the checker functions on the result.
 func checkRequest(t testing.TB, f http.HandlerFunc, req *http.Request, want []wantFunc) {
+	t.Helper()
 	rr := httptest.NewRecorder()
 	f(rr, req)
 
