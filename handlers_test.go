@@ -297,7 +297,7 @@ func TestAbortedRequest(t *testing.T) {
 		}
 	}()
 
-	// set append-only mode and configure path
+	// configure path, the race condition doesn't happen for append-only repositories
 	mux := NewHandler(Server{
 		Path: tempdir,
 	})
