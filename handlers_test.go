@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -250,4 +252,115 @@ func TestResticHandler(t *testing.T) {
 			}
 		})
 	}
+}
+
+// delayErrorReader blocks until Continue is closed, closes the channel FirstRead and then returns Err.
+type delayErrorReader struct {
+	FirstRead     chan struct{}
+	firstReadOnce sync.Once
+
+	Err error
+
+	Continue chan struct{}
+}
+
+func newDelayedErrorReader(err error) *delayErrorReader {
+	return &delayErrorReader{
+		Err:       err,
+		Continue:  make(chan struct{}),
+		FirstRead: make(chan struct{}),
+	}
+}
+
+func (d *delayErrorReader) Read(p []byte) (int, error) {
+	d.firstReadOnce.Do(func() {
+		// close the channel to signal that the first read has happened
+		close(d.FirstRead)
+	})
+	<-d.Continue
+	return 0, d.Err
+}
+
+// TestAbortedRequest runs tests with concurrent upload requests for the same file.
+func TestAbortedRequest(t *testing.T) {
+	// setup the server with a local backend in a temporary directory
+	tempdir, err := ioutil.TempDir("", "rest-server-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// make sure the tempdir is properly removed
+	defer func() {
+		err := os.RemoveAll(tempdir)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	// set append-only mode and configure path
+	mux := NewHandler(Server{
+		Path: tempdir,
+	})
+
+	// create the repo
+	checkRequest(t, mux.ServeHTTP,
+		newRequest(t, "POST", "/?create=true", nil),
+		[]wantFunc{wantCode(http.StatusOK)})
+
+	var (
+		id = "b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c"
+		wg sync.WaitGroup
+	)
+
+	// the first request is an upload to a file which blocks while reading the
+	// body and then after some data returns an error
+	rd := newDelayedErrorReader(errors.New("injected"))
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		// first, read some string, then read from rd (which blocks and then
+		// returns an error)
+		dataReader := io.MultiReader(strings.NewReader("invalid data from aborted request\n"), rd)
+
+		t.Logf("start first upload")
+		req := newRequest(t, "POST", "/data/"+id, dataReader)
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		t.Logf("first upload done, response %v (%v)", rr.Code, rr.Result().Status)
+	}()
+
+	// wait until the first request starts reading from the body
+	<-rd.FirstRead
+
+	// then while the first request is blocked we send a second request to
+	// delete the file and a third request to upload to the file again, only
+	// then the first request is unblocked.
+
+	t.Logf("delete file")
+	checkRequest(t, mux.ServeHTTP,
+		newRequest(t, "DELETE", "/data/"+id, nil),
+		nil) // don't check anything, restic also ignores errors here
+
+	t.Logf("upload again")
+	checkRequest(t, mux.ServeHTTP,
+		newRequest(t, "POST", "/data/"+id, strings.NewReader("foo\n")),
+		[]wantFunc{wantCode(http.StatusOK)})
+
+	// unblock the reader for the first request now so it can continue
+	close(rd.Continue)
+
+	// wait for the first request to continue
+	wg.Wait()
+
+	// request the file again, it must exist and contain the string from the
+	// second request
+	checkRequest(t, mux.ServeHTTP,
+		newRequest(t, "GET", "/data/"+id, nil),
+		[]wantFunc{
+			wantCode(http.StatusOK),
+			wantBody("foo\n"),
+		},
+	)
 }
