@@ -228,7 +228,7 @@ func (h *HtpasswdFile) Validate(user string, password string) bool {
 	h.mutex.Lock()
 	// avoid race conditions with cache replacements
 	cache := h.cache
-	realPassword, exists := h.users[user]
+	hashedPassword, exists := h.users[user]
 	entry, cacheExists := h.cache[user]
 	h.mutex.Unlock()
 
@@ -248,21 +248,7 @@ func (h *HtpasswdFile) Validate(user string, password string) bool {
 		return true
 	}
 
-	isValid := false
-
-	switch {
-	case shaRe.MatchString(realPassword):
-		d := sha1.New()
-		_, _ = d.Write([]byte(password))
-		if subtle.ConstantTimeCompare([]byte(realPassword[5:]), []byte(base64.StdEncoding.EncodeToString(d.Sum(nil)))) == 1 {
-			isValid = true
-		}
-	case bcrRe.MatchString(realPassword):
-		err := bcrypt.CompareHashAndPassword([]byte(realPassword), []byte(password))
-		if err == nil {
-			isValid = true
-		}
-	}
+	isValid := isMatchingHashAndPassword(hashedPassword, password)
 
 	if !isValid {
 		log.Printf("Invalid htpasswd entry for %s.", user)
@@ -278,4 +264,21 @@ func (h *HtpasswdFile) Validate(user string, password string) bool {
 	h.mutex.Unlock()
 
 	return true
+}
+
+func isMatchingHashAndPassword(hashedPassword string, password string) bool {
+	switch {
+	case shaRe.MatchString(hashedPassword):
+		d := sha1.New()
+		_, _ = d.Write([]byte(password))
+		if subtle.ConstantTimeCompare([]byte(hashedPassword[5:]), []byte(base64.StdEncoding.EncodeToString(d.Sum(nil)))) == 1 {
+			return true
+		}
+	case bcrRe.MatchString(hashedPassword):
+		err := bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
+		if err == nil {
+			return true
+		}
+	}
+	return false
 }
