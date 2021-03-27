@@ -254,7 +254,7 @@ func (h *HtpasswdFile) Validate(user string, password string) bool {
 	case shaRe.MatchString(realPassword):
 		d := sha1.New()
 		_, _ = d.Write([]byte(password))
-		if realPassword[5:] == base64.StdEncoding.EncodeToString(d.Sum(nil)) {
+		if subtle.ConstantTimeCompare([]byte(realPassword[5:]), []byte(base64.StdEncoding.EncodeToString(d.Sum(nil)))) == 1 {
 			isValid = true
 		}
 	case bcrRe.MatchString(realPassword):
