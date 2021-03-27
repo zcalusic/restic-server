@@ -211,6 +211,9 @@ func (h *HtpasswdFile) ReloadCheck() error {
 	return nil
 }
 
+var shaRe = regexp.MustCompile(`^{SHA}`)
+var bcrRe = regexp.MustCompile(`^\$2b\$|^\$2a\$|^\$2y\$`)
+
 // Validate returns true if password matches the stored password for user.  If no password for user is stored, or the
 // password is wrong, false is returned.
 func (h *HtpasswdFile) Validate(user string, password string) bool {
@@ -244,9 +247,6 @@ func (h *HtpasswdFile) Validate(user string, password string) bool {
 		h.mutex.Unlock()
 		return true
 	}
-
-	var shaRe = regexp.MustCompile(`^{SHA}`)
-	var bcrRe = regexp.MustCompile(`^\$2b\$|^\$2a\$|^\$2y\$`)
 
 	isValid := false
 
