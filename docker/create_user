@@ -9,8 +9,8 @@ fi
 
 if [ -z "$2" ]; then
     # password from prompt
-    htpasswd -s $PASSWORD_FILE $1
+    htpasswd -B $PASSWORD_FILE $1
 else
     # read password from command line
-    htpasswd -s -b $PASSWORD_FILE $1 $2
+    htpasswd -B -b $PASSWORD_FILE $1 $2
 fi
