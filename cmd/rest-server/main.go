@@ -50,6 +50,7 @@ func init() {
 	flags.BoolVar(&server.AppendOnly, "append-only", server.AppendOnly, "enable append only mode")
 	flags.BoolVar(&server.PrivateRepos, "private-repos", server.PrivateRepos, "users can only access their private repo")
 	flags.BoolVar(&server.Prometheus, "prometheus", server.Prometheus, "enable Prometheus metrics")
+	flags.BoolVar(&server.Prometheus, "prometheus-no-auth", server.PrometheusNoAuth, "disable auth for Prometheus /metrics endpoint")
 	flags.BoolVarP(&showVersion, "version", "V", showVersion, "output version and exit")
 }
 
@@ -75,21 +76,6 @@ func tlsSettings() (bool, string, string, error) {
 	return server.TLS, key, cert, nil
 }
 
-func getHandler(server restserver.Server) (http.Handler, error) {
-	mux := restserver.NewHandler(server)
-	if server.NoAuth {
-		log.Println("Authentication disabled")
-		return mux, nil
-	}
-
-	log.Println("Authentication enabled")
-	htpasswdFile, err := restserver.NewHtpasswdFromFile(filepath.Join(server.Path, ".htpasswd"))
-	if err != nil {
-		return nil, fmt.Errorf("cannot load .htpasswd (use --no-auth to disable): %v", err)
-	}
-	return server.AuthHandler(htpasswdFile, mux), nil
-}
-
 func runRoot(cmd *cobra.Command, args []string) error {
 	if showVersion {
 		fmt.Printf("rest-server %s compiled with %v on %v/%v\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
@@ -112,7 +98,13 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		defer pprof.StopCPUProfile()
 	}
 
-	handler, err := getHandler(server)
+	if server.NoAuth {
+		log.Println("Authentication disabled")
+	} else {
+		log.Println("Authentication enabled")
+	}
+
+	handler, err := restserver.NewHandler(&server)
 	if err != nil {
 		log.Fatalf("error: %v", err)
 	}

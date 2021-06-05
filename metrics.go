@@ -1,6 +1,11 @@
 package restserver
 
-import "github.com/prometheus/client_golang/prometheus"
+import (
+	"strings"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/restic/rest-server/repo"
+)
 
 var metricLabelList = []string{"user", "repo", "type"}
 
@@ -51,6 +56,30 @@ var metricBlobDeleteBytesTotal = prometheus.NewCounterVec(
 	},
 	metricLabelList,
 )
+
+// makeBlobMetricFunc creates a metrics callback function that increments the
+// Prometheus metrics.
+func makeBlobMetricFunc(username string, folderPath []string) repo.BlobMetricFunc {
+	var f repo.BlobMetricFunc = func(objectType string, operation repo.BlobOperation, nBytes uint64) {
+		labels := prometheus.Labels{
+			"user": username,
+			"repo": strings.Join(folderPath, "/"),
+			"type": objectType,
+		}
+		switch operation {
+		case repo.BlobRead:
+			metricBlobReadTotal.With(labels).Inc()
+			metricBlobReadBytesTotal.With(labels).Add(float64(nBytes))
+		case repo.BlobWrite:
+			metricBlobWriteTotal.With(labels).Inc()
+			metricBlobWriteBytesTotal.With(labels).Add(float64(nBytes))
+		case repo.BlobDelete:
+			metricBlobDeleteTotal.With(labels).Inc()
+			metricBlobDeleteBytesTotal.With(labels).Add(float64(nBytes))
+		}
+	}
+	return f
+}
 
 func init() {
 	// These are always initialized, but only updated if Config.Prometheus is set
