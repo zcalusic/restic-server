@@ -1,0 +1,5 @@
+Enhancement: Add support for multiple repositories in a folder
+
+
+https://github.com/restic/rest-server/issues/107
+https://github.com/restic/rest-server/pull/108

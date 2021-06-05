@@ -97,11 +97,13 @@ func join(base string, names ...string) (string, error) {
 
 // getRepo returns the repository location, relative to s.Path.
 func (s *Server) getRepo(r *http.Request) string {
+	repo := "."
 	if strings.HasPrefix(fmt.Sprintf("%s", middleware.Pattern(r.Context())), "/:repo") {
-		return pat.Param(r, "repo")
+		repo = pat.Param(r, "repo")
+	} else if strings.HasPrefix(fmt.Sprintf("%s", middleware.Pattern(r.Context())), "/:folder/:repo") {
+		repo, _ = join(pat.Param(r, "folder"), pat.Param(r, "repo"))
 	}
-
-	return "."
+	return repo
 }
 
 // getPath returns the path for a file type in the repo.
