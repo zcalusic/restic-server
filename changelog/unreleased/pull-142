@@ -1,0 +1,14 @@
+Bugfix: Fix possible data loss due to interrupted network connections
+
+When rest-server was run without `--append-only` it was possible to lose uploaded
+files in a specific scenario in which a network connection was interrupted. For the
+data loss to occur a file upload by restic would have to be interrupted such that
+restic notices the interrupted network connection before the rest-server. Then
+restic would have to retry the file upload and finish it before the rest-server
+notices that the initial upload has failed. Then the uploaded file would be
+accidentally removed by rest-server when trying to cleanup the failed upload.
+
+This has been fixed by always uploading to a temporary file first which is moved
+in position only once it was transfered completely.
+
+https://github.com/restic/rest-server/pull/142
