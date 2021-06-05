@@ -6,9 +6,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"runtime/pprof"
+	"syscall"
 
 	restserver "github.com/restic/rest-server"
 	"github.com/spf13/cobra"
@@ -109,7 +111,18 @@ func runRoot(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		log.Println("CPU profiling enabled")
-		defer pprof.StopCPUProfile()
+
+		// clean profiling shutdown on sigint
+		sigintCh := make(chan os.Signal, 1)
+		go func() {
+			for range sigintCh {
+				pprof.StopCPUProfile()
+				f.Close()
+				log.Println("Stopped CPU profiling")
+				os.Exit(130)
+			}
+		}()
+		signal.Notify(sigintCh, syscall.SIGINT)
 	}
 
 	handler, err := getHandler(server)
