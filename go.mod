@@ -3,7 +3,9 @@ module github.com/restic/rest-server
 go 1.14
 
 require (
+	github.com/PowerDNS/go-tlsconfig v0.0.0-20201014142732-fe6ff56e2a95
 	github.com/beorn7/perks v0.0.0-20160804104726-4c0e84591b9a // indirect
+	github.com/c2h5oh/datasize v0.0.0-20200825124411-48ed595a09d2
 	github.com/golang/protobuf v1.0.0 // indirect
 	github.com/gorilla/handlers v1.3.0
 	github.com/inconshreveable/mousetrap v1.0.0 // indirect
@@ -17,7 +19,7 @@ require (
 	github.com/spf13/pflag v1.0.0 // indirect
 	goji.io v2.0.2+incompatible
 	golang.org/x/crypto v0.0.0-20180214000028-650f4a345ab4
-	golang.org/x/sync v0.0.0-20200317015054-43a5402ce75a // indirect
+	gopkg.in/yaml.v2 v2.4.0
 )
 
 replace goji.io v2.0.0+incompatible => github.com/goji/goji v2.0.0+incompatible
