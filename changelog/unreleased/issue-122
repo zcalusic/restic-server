@@ -1,0 +1,8 @@
+Enhancement: Verify uploaded files
+
+rest-server now verifies that the hash of content of uploaded files matches
+their filename. This ensures that transmission errors are detected and forces
+restic to retry the upload.
+
+https://github.com/restic/rest-server/issues/122
+https://github.com/restic/rest-server/pull/130
