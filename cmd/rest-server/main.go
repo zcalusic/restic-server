@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -33,6 +34,7 @@ var server = restserver.Server{
 var (
 	showVersion bool
 	cpuProfile  string
+	useStdin    bool
 )
 
 func init() {
@@ -51,6 +53,7 @@ func init() {
 	flags.BoolVar(&server.PrivateRepos, "private-repos", server.PrivateRepos, "users can only access their private repo")
 	flags.BoolVar(&server.Prometheus, "prometheus", server.Prometheus, "enable Prometheus metrics")
 	flags.BoolVarP(&showVersion, "version", "V", showVersion, "output version and exit")
+	flags.BoolVar(&useStdin, "stdin", useStdin, "accept connections on the socket from stdin")
 }
 
 var version = "0.10.0-dev"
@@ -127,16 +130,34 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if !enabledTLS {
-		log.Printf("Starting server on %s\n", server.Listen)
-		err = http.ListenAndServe(server.Listen, handler)
-	} else {
+	if useStdin {
+		l, err := net.FileListener(os.NewFile(uintptr(0), ""))
+		if err != nil {
+			log.Fatalf("error %v", err)
+		}
+		if !enabledTLS {
+			log.Printf("Starting server on stdin\n")
+			http.Serve(l, handler)
+		} else {
 
-		log.Println("TLS enabled")
-		log.Printf("Private key: %s", privateKey)
-		log.Printf("Public key(certificate): %s", publicKey)
-		log.Printf("Starting server on %s\n", server.Listen)
-		err = http.ListenAndServeTLS(server.Listen, publicKey, privateKey, handler)
+			log.Println("TLS enabled")
+			log.Printf("Private key: %s", privateKey)
+			log.Printf("Public key(certificate): %s", publicKey)
+			log.Printf("Starting server on stdin\n")
+			http.ServeTLS(l, handler, publicKey, privateKey)
+		}
+	} else {
+		if !enabledTLS {
+			log.Printf("Starting server on %s\n", server.Listen)
+			err = http.ListenAndServe(server.Listen, handler)
+		} else {
+
+			log.Println("TLS enabled")
+			log.Printf("Private key: %s", privateKey)
+			log.Printf("Public key(certificate): %s", publicKey)
+			log.Printf("Starting server on %s\n", server.Listen)
+			err = http.ListenAndServeTLS(server.Listen, publicKey, privateKey, handler)
+		}
 	}
 
 	return err

@@ -60,6 +60,7 @@ To learn how to use restic backup client with REST backend, please consult [rest
           --path string          data directory (default "/tmp/restic")
           --private-repos        users can only access their private repo
           --prometheus           enable Prometheus metrics
+          --stdin                accept connections on the socket from stdin
           --tls                  turn on TLS support
           --tls-cert string      TLS certificate path
           --tls-key string       TLS key path

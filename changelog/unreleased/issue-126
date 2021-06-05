@@ -1,0 +1,8 @@
+Enhancement: support inetd-style operation
+
+rest-server can be used as a "wait" service under inetd-style supervisors.
+In this case, the "--listen" argument is ignored and the socket is provided
+by the supervisor as stdin. This allows running the server as unprivileged
+process, but still use a low port like 443.
+
+https://github.com/restic/restic-server/issues/126
